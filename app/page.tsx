@@ -128,7 +128,7 @@ export default function Home() {
               Your car, sorted.<em>Under one roof.</em>
             </h1>
             <p className="hero-lead reveal">
-              One group, six specialist divisions — from the showroom floor to finance, servicing and
+              One group, seven specialist divisions — from the showroom floor to finance, servicing and
               beyond. Whatever your car needs, the same name stands behind it.
             </p>
             <div className="hero-actions reveal">
@@ -170,7 +170,7 @@ export default function Home() {
                 </span>{" "}
                 The Group
               </span>
-              <h2>Six divisions, one standard.</h2>
+              <h2>Seven divisions, one standard.</h2>
             </div>
             <p className="r reveal">
               Everything your car needs, handled by specialists who answer to the same name — and the
@@ -226,7 +226,7 @@ export default function Home() {
                   <i></i>
                 </div>
                 <h2>
-                  One account. <span className="accentword">Six services.</span> No runaround.
+                  One account. <span className="accentword">Seven services.</span> No runaround.
                 </h2>
                 <p>
                   Buy, finance, service, valet, hire or modify — handled by one group that already

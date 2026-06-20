@@ -16,7 +16,7 @@ export default function SiteFooter() {
               </span>
             </Link>
             <p style={{ color: "var(--tx-soft)", maxWidth: "34ch", margin: "6px 0 18px" }}>
-              Your car, sorted — under one roof. Six specialist divisions, one trusted group.
+              Your car, sorted — under one roof. Seven specialist divisions, one trusted group.
             </p>
             <div className="bars" aria-hidden="true">
               <i></i>
