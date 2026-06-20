@@ -40,3 +40,44 @@ export const PRICE_BANDS: PriceBand[] = [
 
 export const fmt = (n: number) => "£" + n.toLocaleString("en-GB");
 export const fmtMiles = (n: number) => n.toLocaleString("en-GB") + " mi";
+
+export type Filters = { make: string; model: string; priceMax: number; body: string };
+
+export const EMPTY_FILTERS: Filters = { make: "", model: "", priceMax: 999999, body: "" };
+
+// Readable URL slug for a car. Names are unique in the current stock, so the
+// slug is unique; a later DB-backed phase can add an id suffix if needed.
+export function carSlug(car: Car): string {
+  return car.name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
+export function getCarBySlug(slug: string): Car | undefined {
+  return CARS.find((c) => carSlug(c) === slug);
+}
+
+export function filterCars(cars: Car[], f: Filters): Car[] {
+  return cars.filter((c) => {
+    if (f.make && c.brand !== f.make) return false;
+    if (f.body && c.body !== f.body) return false;
+    if (f.priceMax && c.price > f.priceMax) return false;
+    if (f.model) {
+      const q = f.model.toLowerCase();
+      if (!c.name.toLowerCase().includes(q) && !c.brand.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+// Build a /prestige/stock query string from a partial set of filters.
+export function stockQuery(f: Partial<Filters>): string {
+  const p = new URLSearchParams();
+  if (f.make) p.set("make", f.make);
+  if (f.model) p.set("model", f.model);
+  if (f.body) p.set("body", f.body);
+  if (f.priceMax && f.priceMax < 999999) p.set("priceMax", String(f.priceMax));
+  const s = p.toString();
+  return s ? `?${s}` : "";
+}
