@@ -1,21 +1,21 @@
 "use client";
 
-import { useState, useMemo, useRef, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import StarMark from "@/components/StarMark";
+import { useRouter } from "next/navigation";
+import Star from "@/components/Star";
+import CarCard from "@/components/CarCard";
 import {
   CARS,
   BODY_TYPES,
   BRANDS,
   PRICE_BANDS,
-  fmt,
-  fmtMiles,
-  type Car,
+  stockQuery,
+  type Filters,
 } from "@/lib/cars";
 
-type Filters = { make: string; model: string; priceMax: number; body: string };
+const FEATURED = CARS.slice(0, 4);
 
-/* ---------- helpers ---------- */
 function scrollToId(id: string) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -23,59 +23,8 @@ function scrollToId(id: string) {
   window.scrollTo({ top: y, behavior: "smooth" });
 }
 
-/* ---------- placeholder photo ---------- */
-function PlaceholderPhoto({ label, tall = false }: { label: string; tall?: boolean }) {
-  return (
-    <div className={"ph " + (tall ? "ph-tall" : "")} role="img" aria-label={label + " — photo placeholder"}>
-      <div className="ph-stripes" />
-      <span className="ph-tag">{label}</span>
-      <span className="ph-note">drop car photo</span>
-    </div>
-  );
-}
-
-/* ---------- nav ---------- */
-function Nav() {
-  const [scrolled, setScrolled] = useState(false);
-  useEffect(() => {
-    const f = () => setScrolled(window.scrollY > 12);
-    f();
-    window.addEventListener("scroll", f, { passive: true });
-    return () => window.removeEventListener("scroll", f);
-  }, []);
-  const links: [string, string][] = [
-    ["Find a Car", "stock"],
-    ["Finance", "finance"],
-    ["Part Exchange", "partex"],
-    ["Services", "services"],
-    ["Contact", "contact"],
-  ];
-  return (
-    <header className={"nav" + (scrolled ? " scrolled" : "")}>
-      <div className="wrap nav-inner">
-        <Link className="logo" href="/prestige" aria-label="SKH Prestige Motors">
-          <StarMark variant="cream" size={38} />
-          <span className="word">
-            <span className="top" style={{ color: "var(--cream)" }}>SKH</span>
-            <span className="sub" style={{ color: "var(--tx-dim)" }}>Prestige Motors</span>
-          </span>
-        </Link>
-        <nav className="nav-links">
-          {links.map(([t, id]) => (
-            <a key={id} href={"#" + id} onClick={(e) => { e.preventDefault(); scrollToId(id); }}>{t}</a>
-          ))}
-        </nav>
-        <div className="nav-call">
-          <span className="nav-phone" style={{ color: "var(--cream)" }}>07511 849893</span>
-          <a className="btn btn-amber" href="tel:07511849893">Call Now</a>
-        </div>
-      </div>
-    </header>
-  );
-}
-
 /* ---------- hero + search ---------- */
-function Hero({ onSearch }: { onSearch: (next: Partial<Filters>) => void }) {
+function Hero({ onSearch }: { onSearch: (f: Partial<Filters>) => void }) {
   const [make, setMake] = useState("");
   const [model, setModel] = useState("");
   const [priceMax, setPriceMax] = useState(999999);
@@ -117,7 +66,7 @@ function Hero({ onSearch }: { onSearch: (next: Partial<Filters>) => void }) {
                 {PRICE_BANDS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
             </label>
-            <button className="btn btn-cream search-go" onClick={() => onSearch({ make, model, priceMax, body: "" })}>
+            <button className="btn btn-cream search-go" onClick={() => onSearch({ make, model, priceMax })}>
               Search stock
             </button>
           </div>
@@ -137,15 +86,7 @@ const BODY_ICONS: Record<string, string> = {
   Convertible: "M3 13l2-4.7A2 2 0 016.9 7H14M3 13h17l-1-3.5M3 13v3.4m17-3.4v3.4M7 16.4a1.5 1.5 0 11-3 0m14 0a1.5 1.5 0 11-3 0",
   MPV: "M3.5 13l1-5A2 2 0 016.4 6.4h9.5a2 2 0 011.8 1.1L20.5 13M3.5 13h17M3.5 13v3.4m17-3.4v3.4M7 16.4a1.5 1.5 0 11-3 0m14 0a1.5 1.5 0 11-3 0",
 };
-function BodyTiles({
-  counts,
-  active,
-  onPick,
-}: {
-  counts: Record<string, number>;
-  active: string;
-  onPick: (b: string) => void;
-}) {
+function BodyTiles({ counts, onPick }: { counts: Record<string, number>; onPick: (b: string) => void }) {
   return (
     <section className="section" style={{ paddingBottom: 0 }}>
       <div className="wrap">
@@ -154,11 +95,11 @@ function BodyTiles({
             <p className="eyebrow">Browse</p>
             <h2>Shop by body type</h2>
           </div>
-          <a className="seeall" href="#stock" onClick={(e) => { e.preventDefault(); onPick(""); }}>View all stock →</a>
+          <Link className="seeall" href="/prestige/stock">View all stock →</Link>
         </div>
         <div className="tiles reveal">
           {BODY_TYPES.map((t) => (
-            <button key={t} className={"tile" + (active === t ? " on" : "")} onClick={() => onPick(t)}>
+            <button key={t} className="tile" onClick={() => onPick(t)}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
                 <path d={BODY_ICONS[t]} />
               </svg>
@@ -231,58 +172,8 @@ function Stats() {
   );
 }
 
-/* ---------- car card ---------- */
-function CarCard({ car, onView }: { car: Car; onView: (c: Car) => void }) {
-  return (
-    <article className="panel sheen car-card reveal" onClick={() => onView(car)} style={{ cursor: "pointer" }}>
-      <div className="car-photo">
-        <PlaceholderPhoto label={car.name} />
-        <span className="car-price">{fmt(car.price)}</span>
-      </div>
-      <div className="car-body">
-        <h3 className="car-name">{car.name}</h3>
-        <div className="car-chips">
-          <span className="chip">{car.year}</span>
-          <span className="chip">{fmtMiles(car.mileage)}</span>
-          <span className="chip">{car.fuel}</span>
-          <span className="chip">{car.gearbox}</span>
-        </div>
-        <div className="car-foot">
-          <span className="car-mo">from <strong>{fmt(car.monthly)}</strong>/mo<i>*</i></span>
-          <button className="btn btn-cream car-view" onClick={(e) => { e.stopPropagation(); onView(car); }}>View</button>
-        </div>
-      </div>
-    </article>
-  );
-}
-
-/* ---------- featured / stock ---------- */
-function Featured({
-  filters,
-  setFilters,
-  onView,
-}: {
-  filters: Filters;
-  setFilters: React.Dispatch<React.SetStateAction<Filters>>;
-  onView: (c: Car) => void;
-}) {
-  const filtered = useMemo(
-    () =>
-      CARS.filter((c) => {
-        if (filters.make && c.brand !== filters.make) return false;
-        if (filters.body && c.body !== filters.body) return false;
-        if (filters.priceMax && c.price > filters.priceMax) return false;
-        if (filters.model) {
-          const q = filters.model.toLowerCase();
-          if (!c.name.toLowerCase().includes(q) && !c.brand.toLowerCase().includes(q)) return false;
-        }
-        return true;
-      }),
-    [filters]
-  );
-
-  const active = filters.make || filters.body || filters.model || (filters.priceMax && filters.priceMax < 999999);
-
+/* ---------- featured preview ---------- */
+function Featured() {
   return (
     <section className="section" id="stock">
       <div className="wrap">
@@ -291,31 +182,11 @@ function Featured({
             <p className="eyebrow">The showroom</p>
             <h2>Featured cars</h2>
           </div>
-          <span className="result-count">{filtered.length} {filtered.length === 1 ? "car" : "cars"} shown</span>
+          <Link className="seeall" href="/prestige/stock">View all stock →</Link>
         </div>
-
-        {active && (
-          <div className="filter-row reveal">
-            {filters.make && <span className="fpill">{filters.make}<button onClick={() => setFilters((f) => ({ ...f, make: "" }))}>×</button></span>}
-            {filters.body && <span className="fpill">{filters.body}<button onClick={() => setFilters((f) => ({ ...f, body: "" }))}>×</button></span>}
-            {filters.model && <span className="fpill">“{filters.model}”<button onClick={() => setFilters((f) => ({ ...f, model: "" }))}>×</button></span>}
-            {filters.priceMax < 999999 && <span className="fpill">{"≤ " + fmt(filters.priceMax)}<button onClick={() => setFilters((f) => ({ ...f, priceMax: 999999 }))}>×</button></span>}
-            <button className="fclear" onClick={() => setFilters({ make: "", model: "", priceMax: 999999, body: "" })}>Clear all</button>
-          </div>
-        )}
-
-        {filtered.length > 0 ? (
-          <div className="car-grid">
-            {filtered.map((c) => <CarCard key={c.id} car={c} onView={onView} />)}
-          </div>
-        ) : (
-          <div className="panel sheen empty reveal">
-            <StarMark variant="cream" size={48} />
-            <h3>No cars match that search yet</h3>
-            <p>Our stock changes daily — tell us what you’re after and we’ll source it, or browse the full range.</p>
-            <button className="btn btn-cream" onClick={() => setFilters({ make: "", model: "", priceMax: 999999, body: "" })}>Show all cars</button>
-          </div>
-        )}
+        <div className="car-grid">
+          {FEATURED.map((c) => <CarCard key={c.id} car={c} />)}
+        </div>
         <p className="car-disclaimer">*Monthly figures are illustrative examples only and not a financial promotion. See the finance example below.</p>
       </div>
     </section>
@@ -340,7 +211,7 @@ function FinanceExample() {
           <span className="fin-stripe" />
           <div className="fin-head">
             <div className="fin-brand">
-              <StarMark variant="green" size={40} />
+              <Star variant="green" size={40} />
               <div>
                 <p className="eyebrow" style={{ color: "var(--green-deep)" }}>SKH Finance</p>
                 <h2 style={{ color: "var(--ink)" }}>Finance, made flexible</h2>
@@ -393,7 +264,7 @@ function PartExchange() {
           </div>
           <div className="px-actions">
             <a className="btn btn-amber" href="tel:07511849893">Get a valuation</a>
-            <a className="btn btn-ghost" href="#stock" onClick={(e) => { e.preventDefault(); scrollToId("stock"); }}>Browse stock</a>
+            <Link className="btn btn-ghost" href="/prestige/stock">Browse stock</Link>
           </div>
         </div>
       </div>
@@ -497,128 +368,9 @@ function CrossLinks() {
   );
 }
 
-/* ---------- car detail modal ---------- */
-function CarDetail({
-  car,
-  onClose,
-  onFinance,
-}: {
-  car: Car;
-  onClose: () => void;
-  onFinance: () => void;
-}) {
-  const [stage, setStage] = useState<"view" | "reserving" | "reserved" | "enquired">("view");
-  const [ref] = useState(() => "SKH-" + Math.floor(10000 + Math.random() * 89999));
-  const closeRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    if (closeRef.current) closeRef.current.focus();
-    return () => { document.removeEventListener("keydown", onKey); document.body.style.overflow = prev; };
-  }, [onClose]);
-
-  const specs: [string, string | number][] = [
-    ["Year", car.year],
-    ["Mileage", fmtMiles(car.mileage)],
-    ["Fuel", car.fuel],
-    ["Gearbox", car.gearbox],
-    ["Body", car.body],
-    ["Make", car.brand],
-  ];
-
-  return (
-    <div className="cd-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="cd-panel" role="dialog" aria-modal="true" aria-label={car.name}>
-        <button className="cd-close" ref={closeRef} onClick={onClose} aria-label="Close">×</button>
-
-        <div className="cd-media">
-          <PlaceholderPhoto label={car.name} tall />
-          <div className="cd-thumbs">
-            <span className="cd-thumb">front ¾</span>
-            <span className="cd-thumb">interior</span>
-            <span className="cd-thumb">rear</span>
-          </div>
-        </div>
-
-        <div className="cd-info">
-          {stage === "view" && (
-            <>
-              <span className="cd-eyebrow">SKH Prestige · 120-point inspected</span>
-              <h2 className="cd-title">{car.name}</h2>
-              <div className="cd-pricing">
-                <span className="cd-price">{fmt(car.price)}</span>
-                <span className="cd-mo">or from <strong>{fmt(car.monthly)}</strong>/mo<i>*</i></span>
-              </div>
-              <div className="cd-specs">
-                {specs.map(([k, v], i) => (
-                  <div key={i} className="cd-spec"><span>{k}</span><strong>{v}</strong></div>
-                ))}
-              </div>
-              <div className="cd-note">Reserve online for just <strong>£99</strong> — fully refundable. We’ll hold the car for 48 hours while we sort the details.</div>
-              <div className="cd-actions">
-                <button className="btn btn-amber" onClick={() => setStage("reserving")}>Reserve for £99</button>
-                <button className="btn btn-cream" onClick={() => setStage("enquired")}>Enquire</button>
-              </div>
-              <button className="cd-link" onClick={() => { onClose(); onFinance(); }}>See the illustrative finance example →</button>
-              <p className="cd-disclaimer">*Monthly figures are illustrative examples only and not a financial promotion. SKH is not yet FCA-authorised; no live finance is offered until authorisation is in place.</p>
-            </>
-          )}
-
-          {stage === "reserving" && (
-            <form className="cd-form" onSubmit={(e) => { e.preventDefault(); setStage("reserved"); }}>
-              <span className="cd-eyebrow">Reserve · {car.name}</span>
-              <h2 className="cd-title">Hold this car for £99</h2>
-              <p className="cd-sub">Pop your details in and we’ll be in touch to confirm. The £99 is fully refundable and comes off the price if you go ahead.</p>
-              <label className="cd-field"><span>Full name</span><input required type="text" placeholder="Your name" /></label>
-              <label className="cd-field"><span>Phone</span><input required type="tel" placeholder="07…" /></label>
-              <label className="cd-field"><span>Email</span><input required type="email" placeholder="you@email.com" /></label>
-              <div className="cd-actions">
-                <button className="btn btn-amber" type="submit">Confirm reservation</button>
-                <button className="btn btn-cream" type="button" onClick={() => setStage("view")}>Back</button>
-              </div>
-              <p className="cd-disclaimer">No payment is taken now — this is a demonstration form. SKH is not yet FCA-authorised.</p>
-            </form>
-          )}
-
-          {stage === "reserved" && (
-            <div className="cd-success">
-              <StarMark variant="cream" size={54} />
-              <h2 className="cd-title">Reserved — nicely done.</h2>
-              <p className="cd-sub">We’ve provisionally held the <strong>{car.name}</strong> for you. A member of the SKH Prestige team will call shortly to confirm.</p>
-              <div className="cd-ref">Reference <strong>{ref}</strong></div>
-              <div className="cd-actions">
-                <a className="btn btn-amber" href="tel:07511849893">Call us now</a>
-                <button className="btn btn-cream" onClick={onClose}>Keep browsing</button>
-              </div>
-            </div>
-          )}
-
-          {stage === "enquired" && (
-            <div className="cd-success">
-              <StarMark variant="cream" size={54} />
-              <h2 className="cd-title">Let’s talk it through.</h2>
-              <p className="cd-sub">Call the showroom and quote <strong>{car.name}</strong> — we’ll answer anything on spec, history, finance or part-exchange.</p>
-              <div className="cd-ref">Mon–Sat 8–18 · Sun 10–16</div>
-              <div className="cd-actions">
-                <a className="btn btn-amber" href="tel:07511849893">07511 849893</a>
-                <a className="btn btn-cream" href="mailto:info@skhinc.co.uk">Email us</a>
-              </div>
-              <button className="cd-link" onClick={() => setStage("view")}>← Back to the car</button>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- app ---------- */
-export default function PrestigeApp() {
-  const [filters, setFilters] = useState<Filters>({ make: "", model: "", priceMax: 999999, body: "" });
-  const [selected, setSelected] = useState<Car | null>(null);
+/* ---------- home ---------- */
+export default function PrestigeHome() {
+  const router = useRouter();
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
@@ -626,12 +378,8 @@ export default function PrestigeApp() {
     return c;
   }, []);
 
-  const applyAndScroll = (next: Partial<Filters>) => {
-    setFilters((f) => ({ ...f, ...next }));
-    scrollToId("stock");
-  };
+  const goToStock = (f: Partial<Filters>) => router.push("/prestige/stock" + stockQuery(f));
 
-  // reveal-on-scroll (progressive enhancement, with safety fallback)
   useEffect(() => {
     const els = [...document.querySelectorAll<HTMLElement>(".reveal")];
     els.forEach((el, i) => { el.classList.add("js-anim"); el.style.transitionDelay = Math.min(i % 4, 3) * 60 + "ms"; });
@@ -648,22 +396,16 @@ export default function PrestigeApp() {
 
   return (
     <>
-      <Nav />
-      <Hero onSearch={applyAndScroll} />
-      <BodyTiles
-        counts={counts}
-        active={filters.body}
-        onPick={(b) => applyAndScroll({ body: filters.body === b ? "" : b, make: "", model: "", priceMax: 999999 })}
-      />
+      <Hero onSearch={goToStock} />
+      <BodyTiles counts={counts} onPick={(b) => goToStock({ body: b })} />
       <WhyBuy />
       <Stats />
-      <Featured filters={filters} setFilters={setFilters} onView={setSelected} />
+      <Featured />
       <FinanceExample />
       <PartExchange />
       <Reviews />
-      <Brands onPick={(b) => applyAndScroll({ make: b, body: "", model: "", priceMax: 999999 })} />
+      <Brands onPick={(b) => goToStock({ make: b })} />
       <CrossLinks />
-      {selected && <CarDetail car={selected} onClose={() => setSelected(null)} onFinance={() => scrollToId("finance")} />}
     </>
   );
 }
