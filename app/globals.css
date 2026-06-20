@@ -3,13 +3,11 @@
    Light + dark · modern · sleek · editorial
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800;900&family=Hanken+Grotesk:wght@400;500;600;700&family=Saira+Condensed:ital,wght@1,700;1,800&display=swap');
-
 :root {
-  /* Fonts */
-  --font-display: 'Schibsted Grotesk', system-ui, sans-serif;
-  --font-body:    'Hanken Grotesk', system-ui, sans-serif;
-  --font-logo:    'Saira Condensed', sans-serif;
+  /* Fonts — self-hosted via next/font (see app/layout.tsx) */
+  --font-display: var(--font-display-next), system-ui, sans-serif;
+  --font-body:    var(--font-body-next), system-ui, sans-serif;
+  --font-logo:    var(--font-logo-next), system-ui, sans-serif;
 
   /* Surfaces — warm paper whites */
   --paper:      #F6F5F1;   /* page base */
