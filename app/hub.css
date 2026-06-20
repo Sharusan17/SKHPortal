@@ -63,7 +63,7 @@
 
 /* numbered division index along the bottom of the hero */
 .hero-index { position:relative; margin-top: clamp(56px, 8vw, 104px); border-top:1px solid var(--dark-line); padding-top: 22px; }
-.hero-index-row { display:grid; grid-template-columns: repeat(6, 1fr); gap: 0; }
+.hero-index-row { display:grid; grid-template-columns: repeat(7, 1fr); gap: 0; }
 .hidx { display:flex; flex-direction:column; gap:6px; padding: 8px 18px 8px 0; color: var(--on-dark-soft); position:relative; transition: color .2s ease; }
 .hidx + .hidx { padding-left: 18px; border-left:1px solid var(--dark-line); }
 .hidx .n { font-family: ui-monospace,'SF Mono',Menlo,monospace; font-size:.7rem; letter-spacing:.1em; color: var(--on-dark-dim); }

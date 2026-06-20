@@ -1,4 +1,5 @@
 import Link from "next/link";
+import Star from "./Star";
 
 export default function SiteFooter() {
   const year = new Date().getFullYear();
@@ -8,21 +9,7 @@ export default function SiteFooter() {
         <div className="footer-grid">
           <div>
             <Link className="logo" href="/" style={{ marginBottom: 18 }}>
-              <svg width="34" height="34" viewBox="0 0 100 100" aria-hidden="true">
-                <defs>
-                  <linearGradient id="footStar" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0" stopColor="#6c7382" />
-                    <stop offset="1" stopColor="#2a2d35" />
-                  </linearGradient>
-                </defs>
-                <path
-                  d="M50 5 L61 39 L97 39 L68 61 L79 95 L50 74 L21 95 L32 61 L3 39 L39 39 Z"
-                  fill="url(#footStar)"
-                  stroke="#9AA0A8"
-                  strokeWidth="1.4"
-                  strokeOpacity="0.5"
-                />
-              </svg>
+              <Star variant="silver" size={34} />
               <span className="word">
                 <span className="top silver-text">SKH</span>
                 <span className="sub">Inc</span>
@@ -43,9 +30,10 @@ export default function SiteFooter() {
             <Link href="/prestige">Prestige Motors</Link>
             <Link href="/prestige#finance">SKH Finance</Link>
             <Link href="/#divisions">SKH Detailing</Link>
-            <Link href="/#divisions">SKH Rental</Link>
             <Link href="/#divisions">SKH Mechanic</Link>
-            <Link href="/#divisions">SKH Customs</Link>
+            <Link href="/#divisions">SKH Rental</Link>
+            <Link href="/#divisions">SKH Recovery</Link>
+            <Link href="/#divisions">SKH Custom</Link>
           </div>
 
           <div>

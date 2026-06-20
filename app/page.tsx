@@ -1,9 +1,8 @@
 import Link from "next/link";
 import SiteFooter from "@/components/SiteFooter";
 import HubEffects from "@/components/HubEffects";
+import Star, { type StarVariant } from "@/components/Star";
 import "./hub.css";
-
-const STAR_PATH = "M50 5 L61 39 L97 39 L68 61 L79 95 L50 74 L21 95 L32 61 L3 39 L39 39 Z";
 
 type Division = {
   num: string;
@@ -12,7 +11,7 @@ type Division = {
   accent: string;
   href: string;
   live?: boolean;
-  star: { id: string; from: string; to: string; stroke: string; strokeWidth: number; strokeOpacity?: number };
+  star: StarVariant;
 };
 
 const DIVISIONS: Division[] = [
@@ -23,7 +22,7 @@ const DIVISIONS: Division[] = [
     accent: "#C0272D",
     href: "/prestige",
     live: true,
-    star: { id: "s1", from: "#fff", to: "#e3cfc8", stroke: "#caa99e", strokeWidth: 2 },
+    star: "prestige",
   },
   {
     num: "02",
@@ -31,39 +30,47 @@ const DIVISIONS: Division[] = [
     desc: "Flexible car finance tailored to you, with clear illustrative examples.",
     accent: "#0B8F5D",
     href: "/prestige#finance",
-    star: { id: "s2", from: "#19c685", to: "#0a7d52", stroke: "#3ee0a0", strokeWidth: 1.4, strokeOpacity: 0.6 },
+    star: "finance",
   },
   {
     num: "03",
     name: "Detailing",
     desc: "Showroom-grade valeting and detailing — every car leaves immaculate.",
-    accent: "#5A6172",
+    accent: "#5FA8E0",
     href: "#about",
-    star: { id: "s3", from: "#eef0f2", to: "#aab0bb", stroke: "#cfd3d9", strokeWidth: 1.4 },
+    star: "detailing",
   },
   {
     num: "04",
-    name: "Rental",
-    desc: "Self-drive car hire, ready when you need a set of keys today.",
-    accent: "#5A6172",
+    name: "Mechanic",
+    desc: "Servicing, MOT and repairs you can trust — main-dealer care, fair pricing.",
+    accent: "#22B3BD",
     href: "#about",
-    star: { id: "s4", from: "#8b919e", to: "#3a3f49", stroke: "#aab0bb", strokeWidth: 1.4 },
+    star: "mechanic",
   },
   {
     num: "05",
-    name: "Mechanic",
-    desc: "Servicing, MOT and repairs you can trust — main-dealer care, fair pricing.",
-    accent: "#5A6172",
+    name: "Rental",
+    desc: "Self-drive car hire, ready when you need a set of keys today.",
+    accent: "#E0A800",
     href: "#about",
-    star: { id: "s5", from: "#8b919e", to: "#3a3f49", stroke: "#aab0bb", strokeWidth: 1.4 },
+    star: "rental",
   },
   {
     num: "06",
-    name: "Customs",
-    desc: "Modifications and styling, done properly — wheels, wraps, the lot.",
-    accent: "#5A6172",
+    name: "Recovery",
+    desc: "24/7 breakdown recovery and vehicle transport, whenever you’re stuck.",
+    accent: "#8B919E",
     href: "#about",
-    star: { id: "s6", from: "#8b919e", to: "#3a3f49", stroke: "#aab0bb", strokeWidth: 1.4 },
+    star: "recovery",
+  },
+  {
+    num: "07",
+    name: "Custom",
+    desc: "Modifications and styling, done properly — wheels, wraps, the lot.",
+    accent: "#8B6FD0",
+    href: "#about",
+    star: "custom",
   },
 ];
 
@@ -71,9 +78,10 @@ const HERO_INDEX = [
   { n: "01", nm: "Prestige Motors", href: "/prestige" },
   { n: "02", nm: "Finance", href: "/prestige#finance" },
   { n: "03", nm: "Detailing", href: "#divisions" },
-  { n: "04", nm: "Rental", href: "#divisions" },
-  { n: "05", nm: "Mechanic", href: "#divisions" },
-  { n: "06", nm: "Customs", href: "#divisions" },
+  { n: "04", nm: "Mechanic", href: "#divisions" },
+  { n: "05", nm: "Rental", href: "#divisions" },
+  { n: "06", nm: "Recovery", href: "#divisions" },
+  { n: "07", nm: "Custom", href: "#divisions" },
 ];
 
 export default function Home() {
@@ -83,17 +91,7 @@ export default function Home() {
       <header className="nav hero-nav" id="nav">
         <div className="wrap nav-inner">
           <Link className="logo" href="/" aria-label="SKH Inc home">
-            <svg className="star-svg" width="36" height="36" viewBox="0 0 100 100" aria-hidden="true">
-              <defs>
-                <linearGradient id="gunStar" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stopColor="#8b919e" />
-                  <stop offset="0.5" stopColor="#5a6172" />
-                  <stop offset="1" stopColor="#34384200" />
-                  <stop offset="1" stopColor="#343842" />
-                </linearGradient>
-              </defs>
-              <path d={STAR_PATH} fill="url(#gunStar)" stroke="#9AA0A8" strokeWidth="1.2" strokeOpacity="0.5" />
-            </svg>
+            <Star variant="silver" size={36} className="star-svg" />
             <span className="word">
               <span className="top silver-text">SKH</span>
               <span className="sub">Inc</span>
@@ -114,16 +112,7 @@ export default function Home() {
       {/* ============ HERO ============ */}
       <section className="hero on-dark">
         <div className="hero-grid-bg"></div>
-        <svg className="hero-mark" viewBox="0 0 100 100" aria-hidden="true">
-          <defs>
-            <linearGradient id="heroMark" x1="0.1" y1="0" x2="0.9" y2="1">
-              <stop offset="0" stopColor="#3a3f4a" />
-              <stop offset="0.5" stopColor="#262a32" />
-              <stop offset="1" stopColor="#181b20" />
-            </linearGradient>
-          </defs>
-          <path d={STAR_PATH} fill="url(#heroMark)" stroke="#5a6172" strokeWidth="0.8" strokeOpacity="0.5" />
-        </svg>
+        <Star variant="heroDark" size={720} className="hero-mark" />
 
         <div className="wrap">
           <div className="hero-inner">
@@ -198,21 +187,7 @@ export default function Home() {
                   <span className="wash"></span>
                   <div className="dv-top">
                     <span className="dv-num">{d.num}</span>
-                    <svg className="dv-star" viewBox="0 0 100 100" aria-hidden="true">
-                      <defs>
-                        <linearGradient id={d.star.id} x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0" stopColor={d.star.from} />
-                          <stop offset="1" stopColor={d.star.to} />
-                        </linearGradient>
-                      </defs>
-                      <path
-                        d={STAR_PATH}
-                        fill={`url(#${d.star.id})`}
-                        stroke={d.star.stroke}
-                        strokeWidth={d.star.strokeWidth}
-                        strokeOpacity={d.star.strokeOpacity}
-                      />
-                    </svg>
+                    <Star variant={d.star} size={38} className="dv-star" />
                   </div>
                   <h3 className="dv-name">
                     <span className="skh">SKH</span>
