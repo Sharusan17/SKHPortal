@@ -1,44 +1,53 @@
 # SKHPortal
 
-The web platform for **SKH Inc** — a Lancashire automotive group with six specialist
-divisions: Prestige Motors, Finance, Detailing, Rental, Mechanic and Customs.
+The web platform for **SKH Inc** — a Lancashire automotive group with seven specialist
+divisions: Prestige Motors, Finance, Detailing, Mechanic, Rental, Recovery and Custom.
 
-Built with **Next.js** (App Router + TypeScript). Application data will live in a
-standalone **PostgreSQL** database (Railway, viewed in pgAdmin) via **Prisma**, with
-**Supabase** handling authentication. See [`ROADMAP.md`](ROADMAP.md) for the full plan.
+A two-service monorepo:
+
+- **`frontend/`** — the customer-facing site, built with **Next.js** (App Router + TypeScript).
+- **`backend/`** — an **Express + TypeScript** API that owns the application database
+  (standalone **PostgreSQL** on Railway, viewed in pgAdmin) via **Prisma**.
+
+**Supabase** handles authentication (added in a later phase). Both services deploy on
+**Railway**. See [`ROADMAP.md`](ROADMAP.md) for the full plan.
 
 ## Status — Phase 1
 
-The foundation is live: the main group portal and the **SKH Prestige Motors** showroom
-page, both recreating the approved design prototypes in [`project/`](project).
+Live foundation: the SKH Inc group portal and the **SKH Prestige Motors** showroom,
+recreating the approved design prototypes in [`project/`](project).
 
-| Route | Page |
-|-------|------|
-| `/` | SKH Inc group portal (hero, six-division grid, closing CTA) |
-| `/prestige` | Prestige Motors showroom (search, stock grid, finance example, car-detail modal) |
+| Route (frontend) | Page |
+|------------------|------|
+| `/` | SKH Inc group portal (hero, seven-division grid, closing CTA) |
+| `/prestige` | Prestige Motors home (search, featured cars, finance example) |
+| `/prestige/stock` | Inventory — searchable/filterable car grid |
+| `/prestige/stock/[slug]` | Individual car page (specs, reserve/enquire) |
 
-Forms currently behave as in the prototype (client-side). Live persistence to Postgres
-and email notifications land once the database is provisioned.
+The car data is still static (`frontend/lib/cars.ts`); Phase 2 moves it to the backend
+Postgres. Enquiry forms currently behave as in the prototype; the backend
+`POST /api/enquiries` endpoint is scaffolded and goes live once the database is wired.
 
 ## Getting started
 
 ```bash
-npm install
-cp .env.example .env   # fill in values as services are provisioned
-npm run dev            # http://localhost:3000
-```
+# Frontend
+cd frontend && npm install && cp .env.example .env && npm run dev   # http://localhost:3000
 
-Other scripts: `npm run build`, `npm start`, `npm run lint`.
+# Backend (separate terminal)
+cd backend && npm install && cp .env.example .env && npm run dev    # http://localhost:4000
+```
 
 ## Project layout
 
 ```
-app/                 Next.js App Router routes
-  page.tsx           main portal (+ hub.css)
-  prestige/          Prestige Motors page (+ PrestigeApp.tsx, prestige.css)
-  globals.css        shared brand design system
-components/          shared UI (StarMark, SiteFooter, HubEffects)
-lib/                 data + helpers (cars.ts)
+frontend/            Next.js app (the customer site)
+  app/               App Router routes (portal, prestige, stock, car pages)
+  components/        shared UI (Star, SiteFooter, PrestigeNav, CarCard, …)
+  lib/               data + helpers (cars.ts)
+backend/             Express + TypeScript API
+  src/               server (index.ts), Prisma client (db.ts)
+  prisma/            schema.prisma (Enquiry model)
 docs/                roadmap specs and the original design handoff note
 project/             design prototypes (source of truth for the visuals)
 ```
