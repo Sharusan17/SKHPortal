@@ -1,0 +1,25 @@
+// SKHPortal backend — Prisma schema (standalone PostgreSQL on Railway).
+// Inspect the same database in pgAdmin via DATABASE_URL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Enquiry {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  name      String
+  email     String
+  phone     String?
+  division  String   @default("general")
+  message   String
+  status    String   @default("new")
+
+  @@index([createdAt])
+  @@index([status])
+}
