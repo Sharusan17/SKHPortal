@@ -22,7 +22,7 @@ const logo = Saira_Condensed({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://skhinc.co.uk"),
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "https://skhinc.co.uk"),
   title: {
     default: "SKH Inc — Your car, sorted. Under one roof.",
     template: "%s · SKH Inc",
