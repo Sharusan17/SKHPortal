@@ -10,6 +10,57 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ── Prestige Motors inventory ──────────────────────────────
+
+enum VehicleStatus {
+  AVAILABLE
+  RESERVED
+  SOLD
+}
+
+model Vehicle {
+  id          String        @id @default(uuid())
+  slug        String        @unique
+  name        String
+  brand       String
+  body        String
+  fuel        String
+  gearbox     String
+  year        Int
+  mileage     Int
+  price       Int // whole pounds
+  monthly     Int // illustrative monthly, whole pounds
+  description String?
+  status      VehicleStatus @default(AVAILABLE)
+  featured    Boolean       @default(false)
+
+  images       VehicleImage[]
+  enquiries    Enquiry[]
+  reservations Reservation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([brand])
+  @@index([body])
+}
+
+model VehicleImage {
+  id        String  @id @default(uuid())
+  vehicleId String
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  url       String
+  alt       String?
+  position  Int     @default(0)
+
+  createdAt DateTime @default(now())
+
+  @@index([vehicleId])
+}
+
+// ── Enquiries (general + per-vehicle, any division) ────────
+
 model Enquiry {
   id        String   @id @default(uuid())
   createdAt DateTime @default(now())
@@ -20,6 +71,29 @@ model Enquiry {
   message   String
   status    String   @default("new")
 
+  vehicleId String?
+  vehicle   Vehicle? @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+
   @@index([createdAt])
   @@index([status])
+  @@index([division])
+}
+
+// ── £99 reservations on a vehicle ──────────────────────────
+
+model Reservation {
+  id        String   @id @default(uuid())
+  createdAt DateTime @default(now())
+  ref       String   @unique
+  name      String
+  email     String
+  phone     String
+  amount    Int      @default(99) // deposit, whole pounds
+  status    String   @default("pending") // pending | confirmed | cancelled
+
+  vehicleId String
+  vehicle   Vehicle @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([vehicleId])
 }
