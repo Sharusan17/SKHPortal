@@ -2,9 +2,12 @@ import type { Metadata } from "next";
 import PrestigeNav from "@/components/PrestigeNav";
 import SiteFooter from "@/components/SiteFooter";
 import Inventory from "./Inventory";
+import { getVehicles } from "@/lib/api";
 import { EMPTY_FILTERS, type Filters } from "@/lib/cars";
 import "../prestige.css";
 import "./stock.css";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "Browse our stock — SKH Prestige Motors",
@@ -16,7 +19,7 @@ function first(v: string | string[] | undefined): string {
   return Array.isArray(v) ? v[0] ?? "" : v ?? "";
 }
 
-export default function StockPage({
+export default async function StockPage({
   searchParams,
 }: {
   searchParams: { [key: string]: string | string[] | undefined };
@@ -30,10 +33,12 @@ export default function StockPage({
     priceMax: priceMax > 0 ? priceMax : EMPTY_FILTERS.priceMax,
   };
 
+  const vehicles = await getVehicles();
+
   return (
     <>
       <PrestigeNav />
-      <Inventory initial={initial} />
+      <Inventory vehicles={vehicles} initial={initial} />
       <SiteFooter />
     </>
   );

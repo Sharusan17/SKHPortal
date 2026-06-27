@@ -21,3 +21,10 @@
 .cv-back:hover { color: var(--ink); gap:12px; }
 .cv-panel { position:relative; display:grid; grid-template-columns: 0.95fr 1.05fr; overflow:hidden; }
 @media (max-width:820px){ .cv-panel{ grid-template-columns: 1fr; } }
+
+/* real car images on the detail page */
+.cd-img { width:100%; aspect-ratio:16/11; object-fit:cover; border-radius:14px; display:block; }
+.cd-thumb-img { width:100%; aspect-ratio:4/3; object-fit:cover; border-radius:10px; border:1px solid var(--hair); display:block; }
+
+/* form error message */
+.cd-error { color: var(--red); font-size:.9rem; margin:14px 0 0; font-weight:600; }

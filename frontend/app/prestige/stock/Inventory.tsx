@@ -4,20 +4,26 @@ import { useMemo, useState } from "react";
 import CarCard from "@/components/CarCard";
 import Star from "@/components/Star";
 import {
-  CARS,
   BRANDS,
   BODY_TYPES,
   PRICE_BANDS,
   EMPTY_FILTERS,
-  filterCars,
+  filterVehicles,
   fmt,
   type Filters,
+  type Vehicle,
 } from "@/lib/cars";
 
-export default function Inventory({ initial }: { initial: Filters }) {
+export default function Inventory({
+  vehicles,
+  initial,
+}: {
+  vehicles: Vehicle[];
+  initial: Filters;
+}) {
   const [filters, setFilters] = useState<Filters>(initial);
 
-  const results = useMemo(() => filterCars(CARS, filters), [filters]);
+  const results = useMemo(() => filterVehicles(vehicles, filters), [vehicles, filters]);
   const active =
     filters.make || filters.body || filters.model || filters.priceMax < 999999;
 

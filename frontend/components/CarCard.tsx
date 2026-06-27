@@ -1,12 +1,17 @@
 import Link from "next/link";
 import PlaceholderPhoto from "@/components/PlaceholderPhoto";
-import { fmt, fmtMiles, carSlug, type Car } from "@/lib/cars";
+import { fmt, fmtMiles, type Vehicle } from "@/lib/cars";
 
-export default function CarCard({ car }: { car: Car }) {
+export default function CarCard({ car }: { car: Vehicle }) {
   return (
-    <Link className="panel sheen car-card reveal" href={`/prestige/stock/${carSlug(car)}`}>
+    <Link className="panel sheen car-card reveal" href={`/prestige/stock/${car.slug}`}>
       <div className="car-photo">
-        <PlaceholderPhoto label={car.name} />
+        {car.images[0] ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img className="car-img" src={car.images[0].url} alt={car.images[0].alt ?? car.name} />
+        ) : (
+          <PlaceholderPhoto label={car.name} />
+        )}
         <span className="car-price">{fmt(car.price)}</span>
       </div>
       <div className="car-body">

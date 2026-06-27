@@ -6,15 +6,13 @@ import { useRouter } from "next/navigation";
 import Star from "@/components/Star";
 import CarCard from "@/components/CarCard";
 import {
-  CARS,
   BODY_TYPES,
   BRANDS,
   PRICE_BANDS,
   stockQuery,
   type Filters,
+  type Vehicle,
 } from "@/lib/cars";
-
-const FEATURED = CARS.slice(0, 4);
 
 function scrollToId(id: string) {
   const el = document.getElementById(id);
@@ -173,7 +171,7 @@ function Stats() {
 }
 
 /* ---------- featured preview ---------- */
-function Featured() {
+function Featured({ cars }: { cars: Vehicle[] }) {
   return (
     <section className="section" id="stock">
       <div className="wrap">
@@ -185,7 +183,7 @@ function Featured() {
           <Link className="seeall" href="/prestige/stock">View all stock →</Link>
         </div>
         <div className="car-grid">
-          {FEATURED.map((c) => <CarCard key={c.id} car={c} />)}
+          {cars.map((c) => <CarCard key={c.id} car={c} />)}
         </div>
         <p className="car-disclaimer">*Monthly figures are illustrative examples only and not a financial promotion. See the finance example below.</p>
       </div>
@@ -369,14 +367,19 @@ function CrossLinks() {
 }
 
 /* ---------- home ---------- */
-export default function PrestigeHome() {
+export default function PrestigeHome({ vehicles }: { vehicles: Vehicle[] }) {
   const router = useRouter();
 
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
-    CARS.forEach((car) => { c[car.body] = (c[car.body] || 0) + 1; });
+    vehicles.forEach((car) => { c[car.body] = (c[car.body] || 0) + 1; });
     return c;
-  }, []);
+  }, [vehicles]);
+
+  const featured = useMemo(() => {
+    const f = vehicles.filter((v) => v.featured);
+    return (f.length ? f : vehicles).slice(0, 4);
+  }, [vehicles]);
 
   const goToStock = (f: Partial<Filters>) => router.push("/prestige/stock" + stockQuery(f));
 
@@ -400,7 +403,7 @@ export default function PrestigeHome() {
       <BodyTiles counts={counts} onPick={(b) => goToStock({ body: b })} />
       <WhyBuy />
       <Stats />
-      <Featured />
+      <Featured cars={featured} />
       <FinanceExample />
       <PartExchange />
       <Reviews />
