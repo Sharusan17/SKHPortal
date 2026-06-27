@@ -4,7 +4,7 @@ import cors from "cors";
 import { prisma } from "./db";
 
 const app = express();
-const PORT = Number(process.env.PORT) || 4000;
+const PORT = Number(process.env.PORT) || 3001;
 
 // Allow the frontend origin(s). Comma-separate multiple in CORS_ORIGIN.
 const origins = (process.env.CORS_ORIGIN ?? "")

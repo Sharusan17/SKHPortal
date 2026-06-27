@@ -13,7 +13,7 @@ auth separately.
 npm install
 cp .env.example .env          # set DATABASE_URL (and CORS_ORIGIN)
 npx prisma migrate dev        # create the schema in your database
-npm run dev                   # http://localhost:4000
+npm run dev                   # http://localhost:3001
 ```
 
 `npm run prisma:studio` opens Prisma's table viewer; pgAdmin can connect to the same
