@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import StarMark from "@/components/StarMark";
+import MobileMenu from "@/components/MobileMenu";
 
 const LINKS: [string, string][] = [
   ["Find a Car", "/prestige/stock"],
@@ -39,6 +40,7 @@ export default function PrestigeNav() {
         <div className="nav-call">
           <span className="nav-phone" style={{ color: "var(--cream)" }}>07511 849893</span>
           <a className="btn btn-amber" href="tel:07511849893">Call Now</a>
+          <MobileMenu links={LINKS.map(([label, href]) => ({ label, href }))} />
         </div>
       </div>
     </header>

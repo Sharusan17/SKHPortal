@@ -2,6 +2,7 @@ import Link from "next/link";
 import SiteFooter from "@/components/SiteFooter";
 import HubEffects from "@/components/HubEffects";
 import Star, { type StarVariant } from "@/components/Star";
+import MobileMenu from "@/components/MobileMenu";
 import "./hub.css";
 
 type Division = {
@@ -105,6 +106,13 @@ export default function Home() {
           <div className="nav-call">
             <span className="nav-phone">07511 849893</span>
             <a className="btn btn-amber" href="tel:07511849893">Call now</a>
+            <MobileMenu
+              links={[
+                { label: "Prestige Motors", href: "/prestige" },
+                { label: "Divisions", href: "#divisions" },
+                { label: "Group", href: "#about" },
+              ]}
+            />
           </div>
         </div>
       </header>
