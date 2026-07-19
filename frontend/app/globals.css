@@ -241,6 +241,9 @@ h1, .display { font-weight: 800; }
 
 /* ---------- Logo lockup ---------- */
 .logo { display: inline-flex; align-items: center; gap: 12px; }
+/* real SKH wordmark image, cropped out of its padded square */
+.brand-img { height: 42px; width: 150px; object-fit: cover; object-position: center 56%; display: block; }
+.brand-img.brand-sm { height: 38px; width: 135px; }
 .logo .word {
   font-family: var(--font-logo); font-weight: 800; font-style: italic;
   letter-spacing: 0.01em; line-height: 0.86; text-transform: uppercase;

@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import Link from "next/link";
 import SiteFooter from "@/components/SiteFooter";
 import Star from "@/components/Star";
+import Logo from "@/components/Logo";
 import MobileMenu from "@/components/MobileMenu";
 import DivisionEnquiry from "./DivisionEnquiry";
 import { DIVISIONS, getDivision } from "@/lib/divisions";
@@ -33,11 +34,7 @@ export default function DivisionPage({ params }: { params: { slug: string } }) {
       <header className="nav dv-nav" id="nav">
         <div className="wrap nav-inner">
           <Link className="logo" href="/" aria-label="SKH Inc home">
-            <Star variant="silver" size={34} />
-            <span className="word">
-              <span className="top silver-text">SKH</span>
-              <span className="sub">{d.name}</span>
-            </span>
+            <Logo />
           </Link>
           <div className="nav-links">
             <Link href="/prestige">Prestige Motors</Link>
