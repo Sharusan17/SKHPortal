@@ -28,12 +28,12 @@ export default function SiteFooter() {
           <div>
             <h4>Divisions</h4>
             <Link href="/prestige">Prestige Motors</Link>
-            <Link href="/prestige#finance">SKH Finance</Link>
-            <Link href="/#divisions">SKH Detailing</Link>
-            <Link href="/#divisions">SKH Mechanic</Link>
-            <Link href="/#divisions">SKH Rental</Link>
-            <Link href="/#divisions">SKH Recovery</Link>
-            <Link href="/#divisions">SKH Custom</Link>
+            <Link href="/divisions/finance">SKH Finance</Link>
+            <Link href="/divisions/detailing">SKH Detailing</Link>
+            <Link href="/divisions/mechanic">SKH Mechanic</Link>
+            <Link href="/divisions/rental">SKH Rental</Link>
+            <Link href="/divisions/recovery">SKH Recovery</Link>
+            <Link href="/divisions/custom">SKH Custom</Link>
           </div>
 
           <div>

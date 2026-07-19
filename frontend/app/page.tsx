@@ -30,7 +30,7 @@ const DIVISIONS: Division[] = [
     name: "Finance",
     desc: "Flexible car finance tailored to you, with clear illustrative examples.",
     accent: "#0B8F5D",
-    href: "/prestige#finance",
+    href: "/divisions/finance",
     star: "finance",
   },
   {
@@ -38,7 +38,7 @@ const DIVISIONS: Division[] = [
     name: "Detailing",
     desc: "Showroom-grade valeting and detailing — every car leaves immaculate.",
     accent: "#5FA8E0",
-    href: "#about",
+    href: "/divisions/detailing",
     star: "detailing",
   },
   {
@@ -46,7 +46,7 @@ const DIVISIONS: Division[] = [
     name: "Mechanic",
     desc: "Servicing, MOT and repairs you can trust — main-dealer care, fair pricing.",
     accent: "#22B3BD",
-    href: "#about",
+    href: "/divisions/mechanic",
     star: "mechanic",
   },
   {
@@ -54,7 +54,7 @@ const DIVISIONS: Division[] = [
     name: "Rental",
     desc: "Self-drive car hire, ready when you need a set of keys today.",
     accent: "#E0A800",
-    href: "#about",
+    href: "/divisions/rental",
     star: "rental",
   },
   {
@@ -62,7 +62,7 @@ const DIVISIONS: Division[] = [
     name: "Recovery",
     desc: "24/7 breakdown recovery and vehicle transport, whenever you’re stuck.",
     accent: "#8B919E",
-    href: "#about",
+    href: "/divisions/recovery",
     star: "recovery",
   },
   {
@@ -70,19 +70,19 @@ const DIVISIONS: Division[] = [
     name: "Custom",
     desc: "Modifications and styling, done properly — wheels, wraps, the lot.",
     accent: "#8B6FD0",
-    href: "#about",
+    href: "/divisions/custom",
     star: "custom",
   },
 ];
 
 const HERO_INDEX = [
   { n: "01", nm: "Prestige Motors", href: "/prestige" },
-  { n: "02", nm: "Finance", href: "/prestige#finance" },
-  { n: "03", nm: "Detailing", href: "#divisions" },
-  { n: "04", nm: "Mechanic", href: "#divisions" },
-  { n: "05", nm: "Rental", href: "#divisions" },
-  { n: "06", nm: "Recovery", href: "#divisions" },
-  { n: "07", nm: "Custom", href: "#divisions" },
+  { n: "02", nm: "Finance", href: "/divisions/finance" },
+  { n: "03", nm: "Detailing", href: "/divisions/detailing" },
+  { n: "04", nm: "Mechanic", href: "/divisions/mechanic" },
+  { n: "05", nm: "Rental", href: "/divisions/rental" },
+  { n: "06", nm: "Recovery", href: "/divisions/recovery" },
+  { n: "07", nm: "Custom", href: "/divisions/custom" },
 ];
 
 export default function Home() {
