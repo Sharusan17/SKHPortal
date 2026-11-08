@@ -1,0 +1,2726 @@
+"""Database access and VAT return logic. No Streamlit imports, so everything here is testable."""
+from __future__ import annotations
+
+import calendar
+import csv
+import hashlib
+import io
+import json
+import math
+import os
+import re
+import sqlite3
+import tempfile
+import warnings
+import zipfile
+from dataclasses import dataclass, field
+from datetime import date, datetime
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal, InvalidOperation
+from pathlib import Path
+
+import pandas as pd
+
+PROJECT_DIR = Path(__file__).resolve().parent
+# Everything the business enters (database, receipts, invoice PDFs, logo) lives in one folder:
+# admin/data locally, or DATA_DIR (a Railway volume) when deployed.
+DATA_DIR = Path(os.environ.get("DATA_DIR") or PROJECT_DIR.parent / "data")
+DEFAULT_DB = DATA_DIR / "vat.db"
+
+UNCATEGORISED = "Uncategorised"
+CAR_SALE = "Car sale (stock book)"
+CAR_PURCHASE = "Car purchase (stock book)"
+OTHER_SALE_VAT = "Other sale - 20% VAT"
+OTHER_SALE_NO_VAT = "Other sale - no VAT"
+EXPENSE_VAT = "Expense - with VAT"
+EXPENSE_NO_VAT = "Expense - no VAT"
+EXCLUDE = "Exclude (transfers, wages, drawings, HMRC, loans)"
+CATEGORIES = [UNCATEGORISED, CAR_SALE, CAR_PURCHASE, OTHER_SALE_VAT, OTHER_SALE_NO_VAT,
+              EXPENSE_VAT, EXPENSE_NO_VAT, EXCLUDE]
+SALE_CATEGORIES = {OTHER_SALE_VAT, OTHER_SALE_NO_VAT}
+EXPENSE_CATEGORIES = {EXPENSE_VAT, EXPENSE_NO_VAT}
+VAT_CATEGORIES = {OTHER_SALE_VAT, EXPENSE_VAT}
+
+MARGIN = "Margin"
+STANDARD = "Standard"
+CAR_SCHEMES = [MARGIN, STANDARD]
+
+STAGGERS = {
+    "MAR": "Quarters ending Mar, Jun, Sep, Dec",
+    "JAN": "Quarters ending Jan, Apr, Jul, Oct",
+    "FEB": "Quarters ending Feb, May, Aug, Nov",
+}
+_FIRST_END_MONTH = {"JAN": 1, "FEB": 2, "MAR": 3}
+
+ACCOUNTING_SCHEMES = ["Standard (invoice)", "Cash accounting", "Flat rate"]
+
+BOX_LABELS = {
+    1: "VAT due on sales and other outputs",
+    2: "VAT due on acquisitions of goods from the EU (NI only)",
+    3: "Total VAT due (Box 1 + Box 2)",
+    4: "VAT reclaimed on purchases and other inputs",
+    5: "Net VAT to pay HMRC or reclaim (Box 3 - Box 4)",
+    6: "Total value of sales and all other outputs excluding VAT",
+    7: "Total value of purchases and all other inputs excluding VAT",
+    8: "Total value of supplies of goods to the EU (NI only)",
+    9: "Total value of acquisitions of goods from the EU (NI only)",
+}
+
+_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+ZERO = Decimal("0")
+PENNY = Decimal("0.01")
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS business (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    company_number TEXT, company_name TEXT, company_status TEXT, registered_office TEXT,
+    sic_codes TEXT, incorporation_date TEXT, directors TEXT,
+    vrn TEXT, trading_name TEXT, email TEXT, phone TEXT,
+    stagger TEXT NOT NULL, vat_reg_date TEXT,
+    accounting_scheme TEXT NOT NULL, uses_margin_scheme INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS cars (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    reg TEXT, make_model TEXT, scheme TEXT NOT NULL DEFAULT 'Margin',
+    purchase_date TEXT, purchase_price TEXT, purchase_vat TEXT,
+    sale_date TEXT, sale_price TEXT
+);
+CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    row_hash TEXT NOT NULL UNIQUE,
+    date TEXT NOT NULL, description TEXT, amount TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT 'Uncategorised',
+    vat TEXT NOT NULL DEFAULT '0.00', vat_manual INTEGER NOT NULL DEFAULT 0, notes TEXT
+);
+CREATE TABLE IF NOT EXISTS receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    txn_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL, path TEXT NOT NULL, uploaded_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position INTEGER NOT NULL, keyword TEXT NOT NULL, category TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS filings (
+    quarter_start TEXT PRIMARY KEY, quarter_end TEXT NOT NULL,
+    filed_on TEXT NOT NULL, boxes TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_no TEXT NOT NULL UNIQUE,
+    invoice_date TEXT NOT NULL,
+    vehicle_id INTEGER NOT NULL REFERENCES cars(id),
+    buyer_name TEXT NOT NULL, buyer_address TEXT NOT NULL, buyer_email TEXT, buyer_phone TEXT,
+    deliver_same INTEGER NOT NULL DEFAULT 1,
+    deliver_name TEXT, deliver_address TEXT, deliver_email TEXT, deliver_phone TEXT,
+    salesperson TEXT,
+    vehicle TEXT NOT NULL DEFAULT '{}',
+    items TEXT NOT NULL DEFAULT '[]', warranty_lines TEXT NOT NULL DEFAULT '[]',
+    special_instructions TEXT NOT NULL DEFAULT '[]', pricing TEXT NOT NULL DEFAULT '{}',
+    margin_scheme INTEGER NOT NULL DEFAULT 0,
+    void INTEGER NOT NULL DEFAULT 0,
+    pdf_path TEXT, created_at TEXT NOT NULL, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS credit_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    credit_no TEXT NOT NULL UNIQUE,
+    invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+    car_id INTEGER, credit_date TEXT NOT NULL,
+    kind TEXT NOT NULL,            -- 'return' (car back) or 'discount' (price reduced)
+    amount TEXT NOT NULL,          -- what the buyer is credited in all
+    car_amount TEXT NOT NULL,      -- the part that reduces the car's selling price
+    vat TEXT NOT NULL,             -- VAT given back in the credit note's quarter
+    sale_date TEXT, sale_price TEXT, sale_vat TEXT,  -- a returned car's original sale, kept for its quarter
+    reason TEXT, pdf_path TEXT, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS invoice_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL REFERENCES invoices(id),
+    paid_on TEXT NOT NULL, amount TEXT NOT NULL, method TEXT, note TEXT,
+    txn_id INTEGER REFERENCES transactions(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS car_documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    car_id INTEGER NOT NULL REFERENCES cars(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL, filename TEXT NOT NULL, path TEXT NOT NULL, uploaded_at TEXT NOT NULL
+);
+"""
+
+# Stock-book records the margin scheme needs for every car (VAT Notice 718).
+CAR_MARGIN_FIELDS = {"purchase_invoice_no": "purchase invoice no", "seller_name": "seller",
+                     "colour": "colour", "first_reg": "first registered", "mileage": "mileage",
+                     "buyer_name": "buyer", "sales_invoice_no": "sales invoice no"}
+_MIGRATIONS = [
+    ("transactions", "car_id", "INTEGER"), ("cars", "px_allowance", "TEXT"), ("cars", "px_for", "INTEGER"),
+    ("cars", "stock_no", "TEXT"), *(("cars", f, "TEXT") for f in CAR_MARGIN_FIELDS),
+    ("business", "sort_code", "TEXT"), ("business", "account_no", "TEXT"),
+    ("business", "invoice_start", "INTEGER"), ("business", "stock_start", "INTEGER"),
+    *(("cars", f, "TEXT") for f in ("status", "status_at", "auction_house", "lot_no", "buyer_fee",
+                                    "buyer_fee_vat", "purchase_paid_on", "asking_price", "notes")),
+    *(("cars", f, "TEXT") for f in ("fuel_type", "engine_cc", "tax_due", "mot_expiry", "mileage_history",
+                                    "checked_at")),
+    ("business", "year_end", "TEXT"),
+    ("transactions", "expense_type", "TEXT"), ("transactions", "paid_by", "TEXT"),
+]
+
+# A car's journey before it's sold; once sold its stage comes from the sale and invoice payments.
+CAR_STATUSES = {"bought": "Bought", "in_prep": "In prep", "for_sale": "For sale"}
+_RETIRED_STATUSES = {"bill_paid": "bought", "reserved": "for_sale"}  # stages since dropped
+CAR_STAGES = {**CAR_STATUSES, "sold": "Sold", "completed": "Paid in full"}
+# Fields the car panel can change one at a time (sale fields go through invoices or record_sale).
+CAR_DETAIL_FIELDS = ["reg", "make_model", "scheme", "purchase_date", "purchase_price", "purchase_vat",
+                     *CAR_MARGIN_FIELDS, "auction_house", "lot_no", "buyer_fee", "buyer_fee_vat",
+                     "purchase_paid_on", "asking_price", "notes", "status"]
+PREP_DAYS_WARN = 14  # cars in prep longer than this are flagged on Home
+
+STARTER_RULES = [
+    ("hmrc", EXCLUDE), ("transfer", EXCLUDE), ("wages", EXCLUDE), ("salary", EXCLUDE),
+    ("loan", EXCLUDE), ("dividend", EXCLUDE),
+    ("dvla", EXPENSE_NO_VAT), ("insurance", EXPENSE_NO_VAT),
+    ("shell", EXPENSE_VAT), ("esso", EXPENSE_VAT), ("texaco", EXPENSE_VAT),
+    ("autotrader", EXPENSE_VAT), ("auto trader", EXPENSE_VAT),
+]
+
+BUSINESS_FIELDS = ["company_number", "company_name", "company_status", "registered_office",
+                   "sic_codes", "incorporation_date", "directors", "vrn", "trading_name", "email",
+                   "phone", "stagger", "vat_reg_date", "accounting_scheme", "uses_margin_scheme",
+                   "sort_code", "account_no", "invoice_start", "stock_start", "year_end"]
+
+
+# ---------------------------------------------------------------- value helpers
+
+def _is_blank(v) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, float) and math.isnan(v):
+        return True
+    try:
+        if pd.isna(v):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return isinstance(v, str) and v.strip().lower() in ("", "nan", "none", "nat", "<na>")
+
+
+def dec(v) -> Decimal | None:
+    """Parse a money value ('£1,234.50', '(12.00)', 12.5, None) into a Decimal."""
+    if _is_blank(v):
+        return None
+    if isinstance(v, Decimal):
+        return v
+    if isinstance(v, float):
+        return Decimal(repr(v))
+    s = str(v).strip().replace("£", "").replace(" ", "")
+    if re.fullmatch(r"\(?[-+]?[\d.]*\d,\d{2}\)?", s):
+        s = s.replace(".", "").replace(",", ".")  # decimal comma, e.g. 120,00 or 1.234,56
+    s = s.replace(",", "")
+    negative = s.startswith("(") and s.endswith(")")
+    if negative:
+        s = s[1:-1]
+    try:
+        d = Decimal(s)
+    except InvalidOperation:
+        raise ValueError(f"Not a valid amount: {v!r}") from None
+    return -d if negative else d
+
+
+def pence(d: Decimal) -> Decimal:
+    return d.quantize(PENNY, rounding=ROUND_HALF_UP)
+
+
+def whole_pounds(d: Decimal) -> Decimal:
+    # HMRC: Boxes 6-9 are whole pounds with the pence dropped.
+    return d.quantize(Decimal("1"), rounding=ROUND_DOWN)
+
+
+def money_str(d: Decimal | None) -> str | None:
+    return None if d is None else str(pence(d))
+
+
+def to_date(v) -> date | None:
+    """Parse a date, reading ambiguous formats day-first (UK)."""
+    if _is_blank(v):
+        return None
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    s = str(v).strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+        return date.fromisoformat(s[:10])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ts = pd.to_datetime(s, dayfirst=True, errors="coerce")
+    if pd.isna(ts):
+        raise ValueError(f"Not a valid date: {v!r}")
+    return ts.date()
+
+
+def iso(v) -> str | None:
+    d = to_date(v)
+    return d.isoformat() if d else None
+
+
+def text(v) -> str:
+    return "" if _is_blank(v) else str(v).strip()
+
+
+# ---------------------------------------------------------------- database
+
+def connect(db_path: str | Path | None = None) -> sqlite3.Connection:
+    path = Path(db_path or os.environ.get("VAT_DB_PATH") or DEFAULT_DB)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SCHEMA)
+    for table, column, kind in _MIGRATIONS:
+        if column not in {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS cars_stock_no ON cars(stock_no)")
+    with conn:
+        for old, new in _RETIRED_STATUSES.items():
+            conn.execute("UPDATE cars SET status = ? WHERE status = ?", (new, old))
+        for (car_id,) in conn.execute("SELECT id FROM cars WHERE stock_no IS NULL ORDER BY id").fetchall():
+            conn.execute("UPDATE cars SET stock_no = ? WHERE id = ?", (next_stock_no(conn), car_id))
+    conn.commit()
+    return conn
+
+
+def receipts_dir(conn: sqlite3.Connection) -> Path:
+    """Receipts live in ./receipts next to the database file."""
+    db_file = conn.execute("PRAGMA database_list").fetchone()["file"]
+    return Path(db_file).parent / "receipts"
+
+
+# ---------------------------------------------------------------- business
+
+def get_business(conn) -> dict | None:
+    row = conn.execute("SELECT * FROM business WHERE id = 1").fetchone()
+    return dict(row) if row else None
+
+
+def save_business(conn, data: dict) -> None:
+    """Save the business row. Changing the first stock number renumbers the stock book, which is
+    only allowed until the first invoice (stock numbers are printed on invoices)."""
+    old = get_business(conn) or {}
+    if has_invoices(conn):
+        for f, what in (("invoice_start", "invoice"), ("stock_start", "stock")):
+            if data.get(f) and old.get(f) and int(data[f]) != int(old[f]):
+                raise ValueError(f"The first {what} number can't change once an invoice has been created.")
+    values = [data.get(f) for f in BUSINESS_FIELDS]
+    placeholders = ", ".join("?" for _ in BUSINESS_FIELDS)
+    with conn:
+        conn.execute(f"INSERT OR REPLACE INTO business (id, {', '.join(BUSINESS_FIELDS)}) "
+                     f"VALUES (1, {placeholders})", values)
+        start = data.get("stock_start")
+        if start and int(start) != int(old.get("stock_start") or 1) and not has_invoices(conn):
+            ids = [r["id"] for r in conn.execute("SELECT id FROM cars ORDER BY id")]
+            conn.execute("UPDATE cars SET stock_no = NULL")
+            for i, car_id in enumerate(ids):
+                conn.execute("UPDATE cars SET stock_no = ? WHERE id = ?", (f"{int(start) + i:04d}", car_id))
+
+
+def has_invoices(conn) -> bool:
+    return conn.execute("SELECT 1 FROM invoices LIMIT 1").fetchone() is not None
+
+
+def _next_number(conn, table: str, column: str, start_field: str) -> str:
+    # Numbers only ever count up from the highest used, so none are skipped or reused.
+    top = conn.execute(f"SELECT MAX(CAST({column} AS INTEGER)) FROM {table} "
+                       f"WHERE {column} IS NOT NULL").fetchone()[0]
+    if top is not None:
+        return f"{top + 1:04d}"
+    row = conn.execute(f"SELECT {start_field} FROM business WHERE id = 1").fetchone()
+    return f"{int(row[0]) if row and row[0] else 1:04d}"
+
+
+def next_stock_no(conn) -> str:
+    return _next_number(conn, "cars", "stock_no", "stock_start")
+
+
+def next_invoice_no(conn) -> str:
+    return _next_number(conn, "invoices", "invoice_no", "invoice_start")
+
+
+# ---------------------------------------------------------------- VAT number
+
+def normalise_vrn(raw: str) -> str:
+    s = re.sub(r"[\s\-]", "", str(raw or "")).upper()
+    return s[2:] if s.startswith("GB") else s
+
+
+def vrn_shape_ok(raw: str) -> bool:
+    return bool(re.fullmatch(r"\d{9}|\d{12}", normalise_vrn(raw)))
+
+
+def vrn_checksum_ok(raw: str) -> bool:
+    """HMRC VRN check digits: weight digits 1-7 by 8..2, add the last two digits as a number.
+    Valid if the total is divisible by 97 (original scheme) or total + 55 is (mod-9755 scheme).
+    A 12-digit VRN is a 9-digit VRN plus a 3-digit branch code, so only the first nine are checked."""
+    vrn = normalise_vrn(raw)
+    if not vrn_shape_ok(vrn):
+        return False
+    total = sum(int(d) * w for d, w in zip(vrn[:7], range(8, 1, -1))) + int(vrn[7:9])
+    return total % 97 == 0 or (total + 55) % 97 == 0
+
+
+def format_vrn(raw: str) -> str:
+    v = normalise_vrn(raw)
+    if len(v) in (9, 12) and v.isdigit():
+        return f"GB {v[:3]} {v[3:7]} {v[7:9]} {v[9:]}".rstrip()
+    return v
+
+
+# ---------------------------------------------------------------- quarters
+
+@dataclass(frozen=True)
+class Quarter:
+    start: date
+    end: date
+
+    @property
+    def label(self) -> str:
+        s, e = _MONTHS[self.start.month - 1], _MONTHS[self.end.month - 1]
+        if self.start.year == self.end.year:
+            return f"{s}-{e} {self.end.year}"
+        return f"{s} {self.start.year}-{e} {self.end.year}"
+
+    def contains(self, d: date | None) -> bool:
+        return d is not None and self.start <= d <= self.end
+
+
+def _month_index_to_date(idx: int, last_day: bool = False) -> date:
+    y, m = divmod(idx, 12)
+    m += 1
+    return date(y, m, calendar.monthrange(y, m)[1] if last_day else 1)
+
+
+def quarter_for(d: date, stagger: str) -> Quarter:
+    first_end = _FIRST_END_MONTH[stagger]
+    shift = ((first_end - 1) - (d.month - 1)) % 3
+    end_idx = d.year * 12 + d.month - 1 + shift
+    return Quarter(_month_index_to_date(end_idx - 2), _month_index_to_date(end_idx, last_day=True))
+
+
+def recent_quarters(stagger: str, today: date | None = None, reg_date: date | None = None,
+                    count: int = 8) -> list[Quarter]:
+    """Newest first, starting with the quarter in progress; none that end before registration."""
+    q = quarter_for(today or date.today(), stagger)
+    out = []
+    while len(out) < count:
+        if reg_date and q.end < reg_date:
+            break
+        out.append(q)
+        q = quarter_for(date.fromordinal(q.start.toordinal() - 1), stagger)
+    return out
+
+
+def filing_deadline(q: Quarter) -> date:
+    """MTD returns and payment are due one calendar month and seven days after the period ends."""
+    month_after = _month_index_to_date(q.end.year * 12 + q.end.month, last_day=True)
+    return date.fromordinal(month_after.toordinal() + 7)
+
+
+# ---------------------------------------------------------------- stock book
+
+# sale_price is the full price agreed, including any part-exchange allowance; px_for marks a
+# car taken in part-exchange (it holds the id of the car it was traded against).
+CAR_COLUMNS = ["id", "stock_no", "reg", "make_model", "scheme", "purchase_date", "purchase_price",
+               "purchase_vat", "sale_date", "sale_price", "px_allowance", "px_for", *CAR_MARGIN_FIELDS]
+_CAR_MONEY = ["purchase_price", "purchase_vat", "sale_price", "px_allowance", "buyer_fee", "buyer_fee_vat",
+              "asking_price"]
+_CAR_DATES = ["purchase_date", "sale_date", "first_reg", "purchase_paid_on", "status_at", "tax_due",
+              "mot_expiry"]
+_CAR_TEXT = ["make_model", "purchase_invoice_no", "seller_name", "colour", "mileage", "buyer_name",
+             "sales_invoice_no"]
+
+
+def _car_value(col: str, v, scheme: str | None = None):
+    """A stock-book value as stored in the database."""
+    if col == "reg":
+        return text(v).upper()
+    if col in _CAR_DATES:
+        return iso(v)
+    if col == "purchase_vat" and scheme is not None and scheme != STANDARD:
+        return None
+    if col == "px_allowance":
+        return money_str(dec(v)) or None
+    if col in _CAR_MONEY:
+        return money_str(dec(v))
+    if col == "px_for":
+        return None if _is_blank(v) else int(v)
+    return text(v) or None
+
+
+def add_car(conn, reg, make_model="", scheme=MARGIN, purchase_date=None, purchase_price=None,
+            purchase_vat=None, sale_date=None, sale_price=None, px_allowance=None,
+            px_for=None, **details) -> int:
+    """Add a car with the next stock number. `details` are the margin-scheme fields
+    (purchase_invoice_no, seller_name, colour, first_reg, mileage, buyer_name, sales_invoice_no)."""
+    unknown = set(details) - set(CAR_MARGIN_FIELDS)
+    if unknown:
+        raise TypeError(f"Unknown car fields: {', '.join(sorted(unknown))}")
+    values = {"reg": reg, "make_model": make_model, "scheme": scheme, "purchase_date": purchase_date,
+              "purchase_price": purchase_price, "purchase_vat": purchase_vat, "sale_date": sale_date,
+              "sale_price": sale_price, "px_allowance": px_allowance, "px_for": px_for, **details}
+    row = {k: _car_value(k, v) for k, v in values.items()}
+    row["scheme"] = scheme
+    with conn:
+        row["stock_no"] = next_stock_no(conn)
+        cur = conn.execute(f"INSERT INTO cars ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+                           list(row.values()))
+    return cur.lastrowid
+
+
+def cash_price(car: dict) -> Decimal | None:
+    """What the customer paid in money: the sale price less any part-exchange allowance."""
+    if car["sale_price"] is None:
+        return None
+    return car["sale_price"] - (car.get("px_allowance") or ZERO)
+
+
+def get_cars_df(conn) -> pd.DataFrame:
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM cars ORDER BY COALESCE(purchase_date, '9999'), id")]
+    df = pd.DataFrame(rows, columns=CAR_COLUMNS)
+    for c in (c for c in _CAR_DATES if c in df):
+        df[c] = df[c].map(to_date).astype(object)
+    for c in (c for c in _CAR_MONEY if c in df):
+        df[c] = df[c].map(lambda v: float(dec(v)) if dec(v) is not None else None).astype(float)
+    return df
+
+
+def save_cars(conn, df: pd.DataFrame | list[dict], shown_ids: set[int] | None = None) -> int:
+    """Save an edited stock-book grid. `shown_ids` are the cars the grid was showing (all cars if
+    None); any of those missing from `df` were deleted. Rows with no data are dropped. Only the
+    columns a row carries are updated, and stock numbers are never changed here."""
+    records = df.to_dict("records") if isinstance(df, pd.DataFrame) else list(df)
+    editable = [c for c in CAR_COLUMNS if c not in ("id", "stock_no")]
+    keep, updates, inserts = set(), [], []
+    for r in records:
+        rid = None if _is_blank(r.get("id")) else int(r["id"])
+        if all(_is_blank(r.get(c)) for c in editable if c not in ("scheme", "px_for")):
+            continue
+        scheme = r.get("scheme") if r.get("scheme") in CAR_SCHEMES else MARGIN
+        row = {c: _car_value(c, r[c], scheme) for c in editable if c in r and c != "scheme"}
+        row["scheme"] = scheme
+        if rid is None:
+            inserts.append(row)
+        else:
+            keep.add(rid)
+            updates.append((rid, row))
+    if shown_ids is None:
+        shown_ids = {r["id"] for r in conn.execute("SELECT id FROM cars")}
+    deleted = set(shown_ids) - keep
+    invoiced = [r["reg"] for r in conn.execute(
+        f"SELECT c.reg FROM cars c JOIN invoices i ON i.vehicle_id = c.id "
+        f"WHERE c.id IN ({', '.join('?' for _ in deleted)})", list(deleted))] if deleted else []
+    if invoiced:
+        raise ValueError(f"{', '.join(sorted(set(invoiced)))} has an invoice, so it can't be deleted. "
+                         "Void the invoice instead.")
+    with conn:
+        conn.executemany("DELETE FROM cars WHERE id = ?", [(i,) for i in deleted])
+        for rid, row in updates:
+            conn.execute(f"UPDATE cars SET {', '.join(f'{c} = ?' for c in row)} WHERE id = ?",
+                         [*row.values(), rid])
+        for row in inserts:
+            row["stock_no"] = next_stock_no(conn)
+            conn.execute(f"INSERT INTO cars ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+                         list(row.values()))
+    return len(updates) + len(inserts)
+
+
+def record_sale(conn, car_id: int, sale_date, sale_price, px_allowance=None, px_reg=None,
+                px_make_model="") -> int | None:
+    """Mark a car sold. With a part-exchange, `sale_price` is the full price agreed and the
+    part-ex car goes into stock as a margin purchase at its allowance. Returns its id."""
+    px = dec(px_allowance)
+    px = px if px and px > 0 else None
+    with conn:
+        conn.execute("UPDATE cars SET sale_date = ?, sale_price = ?, px_allowance = ? WHERE id = ?",
+                     (iso(sale_date), money_str(dec(sale_price)), money_str(px), car_id))
+    px_id = None
+    if px:
+        px_id = add_car(conn, px_reg, px_make_model, MARGIN, sale_date, px, px_for=car_id)
+    match_car_payments(conn)
+    return px_id
+
+
+def sale_figures(scheme: str, purchase_price: Decimal | None, purchase_vat: Decimal | None,
+                 sale_price: Decimal) -> tuple[Decimal, Decimal | None, Decimal | None]:
+    """Output VAT, margin (margin scheme only) and profit ex VAT for one car sale."""
+    if scheme == MARGIN:
+        margin = sale_price - (purchase_price or ZERO)
+        # Margin scheme: VAT is 1/6 of a positive margin; a loss is zero VAT and
+        # can't be offset against profit on other cars.
+        vat = pence(margin / 6) if margin > 0 else pence(ZERO)
+    else:
+        margin = None
+        vat = pence(sale_price / 6)
+    if purchase_price is None:
+        return vat, margin, None
+    cost = purchase_price - (purchase_vat or ZERO) if scheme == STANDARD else purchase_price
+    return vat, margin, sale_price - vat - cost
+
+
+def list_cars(conn) -> list[dict]:
+    out = []
+    for r in conn.execute("SELECT * FROM cars ORDER BY id"):
+        c = dict(r)
+        for k in _CAR_DATES:
+            c[k] = to_date(c[k])
+        for k in _CAR_MONEY:
+            c[k] = dec(c[k])
+        out.append(c)
+    return out
+
+
+# ---------------------------------------------------------------- rules
+
+def get_rules(conn) -> list[tuple[str, str]]:
+    return [(r["keyword"], r["category"])
+            for r in conn.execute("SELECT keyword, category FROM rules ORDER BY position, id")]
+
+
+def save_rules(conn, rules: list[tuple[str, str]]) -> int:
+    clean = [(text(k), c) for k, c in rules if text(k) and c in CATEGORIES]
+    with conn:
+        conn.execute("DELETE FROM rules")
+        conn.executemany("INSERT INTO rules (position, keyword, category) VALUES (?, ?, ?)",
+                         [(i, k, c) for i, (k, c) in enumerate(clean)])
+    return len(clean)
+
+
+def add_rules(conn, rules: list[tuple[str, str]]) -> int:
+    """Append rules whose keyword isn't already present. Returns how many were added."""
+    existing = get_rules(conn)
+    have = {k.lower() for k, _ in existing}
+    new = [(k, c) for k, c in rules if text(k) and text(k).lower() not in have and c in CATEGORIES]
+    save_rules(conn, existing + new)
+    return len(new)
+
+
+def match_rule(rules: list[tuple[str, str]], description: str) -> str | None:
+    desc = (description or "").lower()
+    for keyword, category in rules:
+        if keyword.lower() in desc:
+            return category
+    return None
+
+
+def _desc_key(description: str) -> str:
+    """Description with card numbers, dates and refs stripped, for matching repeat payees."""
+    words = [w for w in (description or "").lower().split() if not any(ch.isdigit() for ch in w)]
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z ]", " ", " ".join(words))).strip()
+
+
+def _category_history(conn) -> dict[str, str]:
+    history = {}
+    for r in conn.execute("SELECT description, category FROM transactions WHERE category NOT IN "
+                          "(?, ?, ?) ORDER BY date, id", (UNCATEGORISED, CAR_SALE, CAR_PURCHASE)):
+        key = _desc_key(r["description"])
+        if key:
+            history[key] = r["category"]
+    return history
+
+
+def _guess_category(rules, history, description) -> str | None:
+    return match_rule(rules, description) or history.get(_desc_key(description))
+
+
+# ---------------------------------------------------------------- bank transactions
+
+def natural_gross(category: str, amount: Decimal) -> Decimal:
+    """Gross value in the direction the category expects: money in for sales, money out for
+    expenses. A refund in an expense category comes out negative and so reduces the boxes."""
+    return -amount if category in EXPENSE_CATEGORIES else amount
+
+
+def default_vat(category: str, amount: Decimal) -> Decimal:
+    if category in VAT_CATEGORIES:
+        # 20% VAT-inclusive amount: VAT fraction is 1/6 of the gross.
+        return pence(natural_gross(category, amount) / 6)
+    return pence(ZERO)
+
+
+_COLUMN_HINTS = {
+    "date": ["date", "transaction date", "timestamp"],
+    "description": ["description", "transaction description", "details", "reference", "payee",
+                    "merchant", "narrative", "name"],
+    "paid_in": ["paid in", "money in", "credit", "in"],
+    "paid_out": ["paid out", "money out", "debit", "out"],
+    "amount": ["amount", "value", "net amount"],
+}
+
+
+def detect_columns(columns: list[str]) -> dict[str, str | None]:
+    lower = {c: c.strip().lower() for c in columns}
+    found: dict[str, str | None] = {}
+    for role, hints in _COLUMN_HINTS.items():
+        match = None
+        for hint in hints:  # exact header match first, then "contains"
+            match = next((c for c, l in lower.items() if l == hint), None)
+            if match:
+                break
+        if not match and len(hints[0]) > 3:
+            match = next((c for c, l in lower.items() if hints[0] in l), None)
+        found[role] = match
+    if found["paid_in"] or found["paid_out"]:
+        found["amount"] = None
+    return found
+
+
+def read_bank_csv(data: bytes) -> pd.DataFrame:
+    """Read a bank CSV export as strings. Copes with a BOM, Windows encodings, comma / semicolon /
+    tab separators and title or account lines above the real header row."""
+    try:
+        content = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        content = data.decode("cp1252")
+    lines = content.splitlines()
+    sample = "\n".join(lines[:30])
+    sep = max([",", ";", "\t"], key=sample.count)
+    header_at = 0
+    for i, line in enumerate(lines[:30]):
+        cells = [c.strip().strip('"').lower() for c in line.split(sep)]
+        if sum(bool(c) for c in cells) >= 3 and any("date" in c for c in cells):
+            header_at = i
+            break
+    df = pd.read_csv(io.StringIO("\n".join(lines[header_at:])), sep=sep, dtype=str,
+                     keep_default_na=False, skip_blank_lines=True)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df[[any(text(v) for v in row) for row in df.itertuples(index=False)]].reset_index(drop=True)
+
+
+@dataclass
+class ImportResult:
+    added: int = 0
+    skipped: int = 0
+    failed: list[str] = field(default_factory=list)
+    categorised: int = 0
+    cars_matched: int = 0
+
+
+def import_transactions(conn, raw: pd.DataFrame, mapping: dict) -> ImportResult:
+    """Import a bank CSV (read with dtype=str). Each row is keyed on the SHA1 of its raw values
+    plus how many identical rows came before it in the file, so re-importing the same or an
+    overlapping export is safe while genuine same-day duplicates are kept."""
+    result = ImportResult()
+    rules = get_rules(conn)
+    history = _category_history(conn)
+    seen: dict[str, int] = {}
+    with conn:
+        for i, row in enumerate(raw.to_dict("records"), start=1):
+            raw_key = "\x1f".join(text(row[c]) for c in raw.columns)
+            n = seen.get(raw_key, 0)
+            seen[raw_key] = n + 1
+            row_hash = hashlib.sha1(f"{raw_key}\x1e{n}".encode()).hexdigest()
+            try:
+                d = to_date(row.get(mapping.get("date")) if mapping.get("date") else None)
+                if d is None:
+                    raise ValueError("no date")
+                if mapping.get("amount"):
+                    amount = dec(row.get(mapping["amount"]))
+                    if amount is None:
+                        raise ValueError("no amount")
+                else:
+                    paid_in = dec(row.get(mapping["paid_in"])) if mapping.get("paid_in") else None
+                    paid_out = dec(row.get(mapping["paid_out"])) if mapping.get("paid_out") else None
+                    if paid_in is None and paid_out is None:
+                        raise ValueError("no amount")
+                    amount = abs(paid_in or ZERO) - abs(paid_out or ZERO)
+            except ValueError as e:
+                preview = " | ".join(text(v) for v in row.values() if text(v))[:80]
+                result.failed.append(f"Row {i} ({preview or 'blank'}): {e}")
+                continue
+            description = text(row.get(mapping["description"])) if mapping.get("description") else ""
+            category = _guess_category(rules, history, description) or UNCATEGORISED
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO transactions (row_hash, date, description, amount, category, vat) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (row_hash, d.isoformat(), description, money_str(amount), category,
+                 money_str(default_vat(category, amount))))
+            if cur.rowcount:
+                result.added += 1
+                result.categorised += category != UNCATEGORISED
+            else:
+                result.skipped += 1
+    result.cars_matched = match_car_payments(conn)
+    return result
+
+
+def auto_categorise(conn) -> int:
+    """Categorise uncategorised transactions from rules, then from how the same payee was
+    categorised before, then by matching car payments to the stock book."""
+    rules = get_rules(conn)
+    history = _category_history(conn)
+    changed = 0
+    with conn:
+        for r in conn.execute("SELECT id, description, amount, vat_manual FROM transactions "
+                              "WHERE category = ?", (UNCATEGORISED,)).fetchall():
+            cat = _guess_category(rules, history, r["description"])
+            if cat and cat != UNCATEGORISED:
+                if r["vat_manual"]:
+                    conn.execute("UPDATE transactions SET category = ? WHERE id = ?", (cat, r["id"]))
+                else:
+                    conn.execute("UPDATE transactions SET category = ?, vat = ? WHERE id = ?",
+                                 (cat, money_str(default_vat(cat, dec(r["amount"]))), r["id"]))
+                changed += 1
+    return changed + match_car_payments(conn)
+
+
+def match_car_payments(conn, window_days: int = 7) -> int:
+    """Link bank lines to stock-book cars when the amount equals the car's sale or purchase price
+    and the dates are within `window_days`. Linked lines become Car sale / Car purchase."""
+    cars = list_cars(conn)
+    linked = {(r["car_id"], r["category"]) for r in
+              conn.execute("SELECT car_id, category FROM transactions WHERE car_id IS NOT NULL")}
+    rows = conn.execute("SELECT id, date, amount, category FROM transactions WHERE car_id IS NULL "
+                        "AND category IN (?, ?, ?)", (UNCATEGORISED, CAR_SALE, CAR_PURCHASE)).fetchall()
+    matched = 0
+    with conn:
+        for t in rows:
+            amount, d = dec(t["amount"]), to_date(t["date"])
+            if amount > 0 and t["category"] != CAR_PURCHASE:
+                kind, price, date_key = CAR_SALE, cash_price, "sale_date"
+            elif amount < 0 and t["category"] != CAR_SALE:
+                kind, date_key = CAR_PURCHASE, "purchase_date"
+                price = lambda c: None if c["px_for"] else c["purchase_price"]  # part-ex: no payment
+            else:
+                continue
+            best = None
+            for c in cars:
+                if price(c) is None or c[date_key] is None or (c["id"], kind) in linked:
+                    continue
+                gap = abs((d - c[date_key]).days)
+                if pence(price(c)) == pence(abs(amount)) and gap <= window_days \
+                        and (best is None or gap < best[0]):
+                    best = (gap, c)
+            if best:
+                linked.add((best[1]["id"], kind))
+                conn.execute("UPDATE transactions SET category = ?, car_id = ?, vat = '0.00', "
+                             "vat_manual = 0 WHERE id = ?", (kind, best[1]["id"], t["id"]))
+                matched += 1
+    return matched
+
+
+def car_reconciliation(conn, quarter: Quarter) -> dict:
+    """Car-category bank lines with no stock-book car, and cars bought or sold in the quarter
+    with no linked bank payment (often fine: cash, finance payouts, part-exchange)."""
+    rows = _txn_rows(conn, quarter)
+    linked = {(t["car_id"], t["category"]) for t in _txn_rows(conn) if t["car_id"]}
+    car_ids = {c["id"] for c in list_cars(conn)}
+    unlinked = [t for t in rows if t["category"] in (CAR_SALE, CAR_PURCHASE)
+                and t["car_id"] not in car_ids]
+    sold, bought = [], []
+    for c in list_cars(conn):
+        cash = cash_price(c)
+        if quarter.contains(c["sale_date"]) and (c["id"], CAR_SALE) not in linked \
+                and (cash is None or cash > 0):
+            sold.append({**c, "cash_price": cash})
+        if quarter.contains(c["purchase_date"]) and (c["id"], CAR_PURCHASE) not in linked \
+                and not c["px_for"]:
+            bought.append(c)
+    return {"unlinked_txns": unlinked, "sold_unpaid": sold, "bought_unpaid": bought}
+
+
+TXN_COLUMNS = ["id", "date", "description", "amount", "category", "vat", "notes", "receipts"]
+
+
+def _txn_rows(conn, quarter: Quarter | None = None) -> list[dict]:
+    sql = ("SELECT t.*, (SELECT COUNT(*) FROM receipts r WHERE r.txn_id = t.id) AS receipts "
+           "FROM transactions t")
+    params: tuple = ()
+    if quarter:
+        sql += " WHERE t.date BETWEEN ? AND ?"
+        params = (quarter.start.isoformat(), quarter.end.isoformat())
+    return [dict(r) for r in conn.execute(sql + " ORDER BY t.date, t.id", params)]
+
+
+def get_transactions_df(conn, quarter: Quarter | None = None) -> pd.DataFrame:
+    rows = _txn_rows(conn, quarter)
+    df = pd.DataFrame(rows, columns=TXN_COLUMNS)
+    df["date"] = df["date"].map(to_date).astype(object)
+    df["amount"] = df["amount"].map(lambda v: float(dec(v))).astype(float)
+    df["vat"] = df["vat"].map(lambda v: float(dec(v))).astype(float)
+    df["notes"] = df["notes"].map(text)
+    return df
+
+
+def update_transactions(conn, edited: pd.DataFrame) -> int:
+    """Save category / VAT / notes edits. VAT typed by hand sticks; otherwise a category change
+    resets VAT to that category's default. Clearing the VAT cell restores the default."""
+    changed = 0
+    with conn:
+        for r in edited.to_dict("records"):
+            cur = conn.execute("SELECT * FROM transactions WHERE id = ?", (int(r["id"]),)).fetchone()
+            if not cur:
+                continue
+            amount = dec(cur["amount"])
+            cat = r.get("category") if r.get("category") in CATEGORIES else cur["category"]
+            new_vat = dec(r.get("vat"))
+            old_vat = dec(cur["vat"])
+            vat, manual = old_vat, cur["vat_manual"]
+            if new_vat is None:
+                vat, manual = default_vat(cat, amount), 0
+            elif pence(new_vat) != old_vat:
+                vat, manual = pence(new_vat), 1
+            elif cat != cur["category"] and not cur["vat_manual"]:
+                vat = default_vat(cat, amount)
+            notes = text(r.get("notes"))
+            car_id = cur["car_id"] if cat == cur["category"] else None
+            if (cat, money_str(vat), manual, notes) != (cur["category"], cur["vat"],
+                                                       cur["vat_manual"], cur["notes"] or ""):
+                conn.execute("UPDATE transactions SET category = ?, vat = ?, vat_manual = ?, notes = ?, "
+                             "car_id = ? WHERE id = ?",
+                             (cat, money_str(vat), manual, notes, car_id, cur["id"]))
+                if cat not in EXPENSE_CATEGORIES:  # an expense type only belongs on a cost
+                    conn.execute("UPDATE transactions SET expense_type = NULL WHERE id = ?", (cur["id"],))
+                changed += 1
+    return changed
+
+
+def add_transaction(conn, d, description, amount, category=UNCATEGORISED, vat=None) -> int:
+    """Insert a single transaction directly (used by tests and manual entry)."""
+    amount = dec(amount)
+    row_hash = hashlib.sha1(f"manual\x1f{d}\x1f{description}\x1f{amount}\x1f{datetime.now().isoformat()}"
+                            .encode()).hexdigest()
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO transactions (row_hash, date, description, amount, category, vat, vat_manual) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (row_hash, iso(d), description, money_str(amount), category,
+             money_str(dec(vat) if vat is not None else default_vat(category, amount)),
+             1 if vat is not None else 0))
+    return cur.lastrowid
+
+
+# ---------------------------------------------------------------- receipts
+
+RECEIPT_TYPES = ["pdf", "png", "jpg", "jpeg", "heic"]
+
+
+def add_receipt(conn, txn_id: int, filename: str, data: bytes) -> Path:
+    folder = receipts_dir(conn) / str(txn_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    name = re.sub(r"[^A-Za-z0-9._ -]", "_", Path(filename).name) or "receipt"
+    target = folder / name
+    n = 1
+    while target.exists():
+        target = folder / f"{Path(name).stem}_{n}{Path(name).suffix}"
+        n += 1
+    target.write_bytes(data)
+    with conn:
+        conn.execute("INSERT INTO receipts (txn_id, filename, path, uploaded_at) VALUES (?, ?, ?, ?)",
+                     (txn_id, target.name, f"{txn_id}/{target.name}",
+                      datetime.now().isoformat(timespec="seconds")))
+    return target
+
+
+def list_receipts(conn, txn_id: int) -> list[dict]:
+    base = receipts_dir(conn)
+    return [{**dict(r), "full_path": base / r["path"]}
+            for r in conn.execute("SELECT * FROM receipts WHERE txn_id = ? ORDER BY id", (txn_id,))]
+
+
+def delete_receipt(conn, receipt_id: int) -> None:
+    row = conn.execute("SELECT path FROM receipts WHERE id = ?", (receipt_id,)).fetchone()
+    if not row:
+        return
+    (receipts_dir(conn) / row["path"]).unlink(missing_ok=True)
+    with conn:
+        conn.execute("DELETE FROM receipts WHERE id = ?", (receipt_id,))
+
+
+# ---------------------------------------------------------------- VAT return
+
+@dataclass
+class VatReturn:
+    quarter: Quarter
+    boxes: dict[int, Decimal]
+    warnings: list[str]
+    cars_sold: list[dict]
+    car_lines: list[dict]
+    filed_on: date | None = None
+    # What makes up each box: {box, kind ('car' or 'bank'), ref (car or transaction id), label, amount}
+    detail: list[dict] = field(default_factory=list)
+    # The first day VAT counts in this quarter (the registration date in the first return),
+    # and False for a quarter wholly before registration (no return is due for it).
+    vat_from: date | None = None
+    registered: bool = True
+
+    def box_str(self, n: int) -> str:
+        return box_str(n, self.boxes[n])
+
+
+def box_str(n: int, value: Decimal) -> str:
+    return f"{value:.2f}" if n <= 5 else f"{value:.0f}"
+
+
+def _fmt(d: Decimal) -> str:
+    return f"£{d:,.2f}"
+
+
+def get_filing(conn, quarter: Quarter) -> dict | None:
+    row = conn.execute("SELECT * FROM filings WHERE quarter_start = ?",
+                       (quarter.start.isoformat(),)).fetchone()
+    if not row:
+        return None
+    return {"filed_on": to_date(row["filed_on"]),
+            "boxes": {int(k): v for k, v in json.loads(row["boxes"]).items()}}
+
+
+def mark_filed(conn, quarter: Quarter, filed_on: date) -> None:
+    """Record the quarter as filed with HMRC, keeping the box figures as they were sent."""
+    result = calculate_return(conn, quarter)
+    if not result.registered:
+        raise ValueError(f"No VAT return is due for {quarter.label}: the business wasn't VAT registered yet.")
+    with conn:
+        conn.execute("INSERT OR REPLACE INTO filings (quarter_start, quarter_end, filed_on, boxes) "
+                     "VALUES (?, ?, ?, ?)",
+                     (quarter.start.isoformat(), quarter.end.isoformat(), filed_on.isoformat(),
+                      json.dumps({n: result.box_str(n) for n in range(1, 10)})))
+
+
+def unmark_filed(conn, quarter: Quarter) -> None:
+    with conn:
+        conn.execute("DELETE FROM filings WHERE quarter_start = ?", (quarter.start.isoformat(),))
+
+
+def vat_reg_date(conn) -> date | None:
+    return to_date((get_business(conn) or {}).get("vat_reg_date"))
+
+
+def vat_counts(reg: date | None, d: date | None) -> bool:
+    """Whether VAT applies on this date: from the VAT registration date on."""
+    return reg is None or (d is not None and d >= reg)
+
+
+PRE_REG_SERVICES_MONTHS = 6  # HMRC: VAT on services bought up to 6 months before registration
+
+
+def calculate_return(conn, quarter: Quarter) -> VatReturn:
+    b = {n: ZERO for n in range(1, 10)}
+    warns: list[str] = []
+    cars_sold: list[dict] = []
+    car_lines: list[dict] = []
+    detail: list[dict] = []
+    business = get_business(conn) or {}
+    vat_reg = to_date(business.get("vat_reg_date"))
+    if vat_reg and vat_reg > quarter.end:
+        return VatReturn(quarter, {n: ZERO for n in range(1, 10)},
+                         [f"Not VAT registered until {vat_reg:%d/%m/%Y}, so there is no VAT return for {quarter.label}."],
+                         [], [], None, [], vat_from=vat_reg, registered=False)
+    first = bool(vat_reg and quarter.start < vat_reg <= quarter.end)
+    whole = quarter
+    if first:  # the first return runs from the registration date to the end of the quarter
+        quarter = Quarter(vat_reg, whole.end)
+
+    def add(box: int, amount: Decimal, kind: str, ref, label: str) -> None:
+        b[box] += amount
+        if amount:
+            detail.append({"box": box, "kind": kind, "ref": ref, "label": label, "amount": amount})
+
+    if business.get("accounting_scheme") and business["accounting_scheme"] != ACCOUNTING_SCHEMES[0]:
+        warns.append(f"Accounting scheme is set to {business['accounting_scheme']}. Margin-scheme car "
+                     "sales can't use it, and these figures assume standard accounting.")
+
+    cars = list_cars(conn)
+    if business and not business.get("uses_margin_scheme") and any(c["scheme"] == MARGIN for c in cars):
+        warns.append("The stock book has margin-scheme cars but the business is set up as not using "
+                     "the margin scheme.")
+
+    for c in cars:
+        reg = c["reg"] or f"Car #{c['id']}"
+        bought, sold = quarter.contains(c["purchase_date"]), quarter.contains(c["sale_date"])
+        if not (bought or sold):
+            continue
+        pp, pv, sp = c["purchase_price"], c["purchase_vat"] or ZERO, c["sale_price"]
+        fee, fee_vat = c.get("buyer_fee") or ZERO, c.get("buyer_fee_vat") or ZERO
+        # An auction buyer's fee with no VAT shown (the auctioneers' scheme) is part of the
+        # margin purchase price; one with VAT shown is a normal cost and its VAT is reclaimed.
+        fee_in_margin = c["scheme"] == MARGIN and fee and not fee_vat
+        line = {"reg": reg, "make_model": c["make_model"], "scheme": c["scheme"],
+                "purchase_date": c["purchase_date"], "purchase_price": pp,
+                "purchase_vat": pv if c["scheme"] == STANDARD else None,
+                "sale_date": c["sale_date"], "sale_price": sp, "margin": None, "output_vat": None,
+                "profit": None, "px_allowance": c["px_allowance"],
+                "in_quarter": "Bought and sold" if bought and sold else ("Bought" if bought else "Sold")}
+
+        if bought:
+            if pp is None:
+                warns.append(f"{reg}: bought {c['purchase_date']:%d/%m/%Y} with no purchase price, "
+                             "so it isn't in Box 7.")
+            elif c["scheme"] == MARGIN:
+                # No VAT on a margin purchase: the full price is an input in Box 7.
+                add(7, pp, "car", c["id"], f"{reg} bought")
+            else:
+                if not c["purchase_vat"]:
+                    warns.append(f"{reg}: Standard car with no purchase VAT entered, so no VAT is "
+                                 "reclaimed on it. Use Margin if the invoice showed no VAT.")
+                add(4, pv, "car", c["id"], f"{reg} purchase VAT")
+                add(7, pp - pv, "car", c["id"], f"{reg} bought")
+            if fee:
+                add(4, fee_vat, "car", c["id"], f"{reg} buyer's fee VAT")
+                add(7, fee - fee_vat, "car", c["id"], f"{reg} buyer's fee")
+
+        if sold:
+            if c["purchase_date"] and c["sale_date"] < c["purchase_date"]:
+                warns.append(f"{reg}: sale date {c['sale_date']:%d/%m/%Y} is before its purchase "
+                             f"date {c['purchase_date']:%d/%m/%Y}.")
+            if sp is None:
+                warns.append(f"{reg}: has a sale date but no sale price, so it is left out.")
+            else:
+                if c["px_allowance"] and c["px_allowance"] > sp:
+                    warns.append(f"{reg}: part-exchange allowance {_fmt(c['px_allowance'])} is more "
+                                 f"than the sale price {_fmt(sp)}. The sale price should include it.")
+                if pp is None:
+                    warns.append(f"{reg}: sold with no purchase price."
+                                 + (" VAT has been worked out on the full sale price until one is "
+                                    "entered." if c["scheme"] == MARGIN else ""))
+                missing = [label for f, label in CAR_MARGIN_FIELDS.items() if not c.get(f)]
+                if c["scheme"] == MARGIN and missing:
+                    warns.append(f"{reg}: margin-scheme stock book is missing {', '.join(missing)}.")
+                cost = pp + fee if fee_in_margin and pp is not None else pp
+                vat, margin, profit = sale_figures(c["scheme"], cost, c["purchase_vat"], sp)
+                add(1, vat, "car", c["id"], f"{reg} sold")
+                add(6, sp - vat, "car", c["id"], f"{reg} sold")
+                line.update(output_vat=vat, margin=margin, profit=profit)
+                cars_sold.append(line)
+        car_lines.append(line)
+
+    for cn in list_credit_notes(conn):
+        reg_no = cn["reg"] or f"Car #{cn['car_id']}"
+        if cn["kind"] == "return" and quarter.contains(cn["sale_date"]) and vat_counts(vat_reg, cn["sale_date"]):
+            # The sale happened (and may be filed); the credit note reverses it in its own quarter.
+            add(1, cn["sale_vat"], "car", cn["car_id"], f"{reg_no} sold (returned later, {cn['credit_no']})")
+            add(6, cn["sale_price"] - cn["sale_vat"], "car", cn["car_id"], f"{reg_no} sold (returned later)")
+        if quarter.contains(cn["credit_date"]) and vat_counts(vat_reg, cn["sale_date"]):
+            label = f"{cn['credit_no']} {reg_no} {'returned' if cn['kind'] == 'return' else 'price reduced'}"
+            add(1, -cn["vat"], "credit", cn["id"], label)
+            add(6, -(cn["car_amount"] - cn["vat"]), "credit", cn["id"], label)
+
+    if first:
+        # Goods bought before registration and still held on that day: their VAT is reclaimed on
+        # the first return (HMRC allows up to 4 years back). Cars sold before it don't qualify.
+        for c in cars:
+            if not c["purchase_date"] or c["purchase_date"] >= vat_reg or (c["sale_date"] and c["sale_date"] < vat_reg):
+                continue
+            pv = (c["purchase_vat"] or ZERO) if c["scheme"] == STANDARD else ZERO
+            fee, fee_vat = c.get("buyer_fee") or ZERO, c.get("buyer_fee_vat") or ZERO
+            reg_no = c["reg"] or f"Car #{c['id']}"
+            if pv:
+                add(4, pv, "car", c["id"], f"{reg_no} purchase VAT (in stock at registration)")
+                add(7, (c["purchase_price"] or ZERO) - pv, "car", c["id"], f"{reg_no} bought before registration")
+            if fee_vat:
+                add(4, fee_vat, "car", c["id"], f"{reg_no} buyer's fee VAT (in stock at registration)")
+                add(7, fee - fee_vat, "car", c["id"], f"{reg_no} buyer's fee before registration")
+        # Services in the 6 months before: only if they're for sales made after registering,
+        # which the app can't tell, so they're flagged rather than claimed.
+        since = _month_index_to_date(vat_reg.year * 12 + vat_reg.month - 1 - PRE_REG_SERVICES_MONTHS)
+        pre = [t for t in _txn_rows(conn, Quarter(since, date.fromordinal(vat_reg.toordinal() - 1)))
+               if t["category"] == EXPENSE_VAT and dec(t["vat"])]
+        if pre:
+            warns.append(f"{_fmt(sum((dec(t['vat']) for t in pre), ZERO))} VAT on {len(pre)} cost"
+                         f"{'s' if len(pre) != 1 else ''} in the 6 months before registration isn't claimed. "
+                         "HMRC allows it only for services used for sales made after registering: check with "
+                         "your accountant before adding it.")
+        pre_sales = [c for c in cars if c["sale_date"] and whole.start <= c["sale_date"] < vat_reg]
+        if pre_sales:
+            n = len(pre_sales)
+            warns.append(f"{n} car{'s' if n != 1 else ''} sold before registration ({vat_reg:%d/%m/%Y}) "
+                         f"{'are' if n != 1 else 'is'} left out: no VAT is due on {'them' if n != 1 else 'it'}.")
+
+    warns.extend(invoice_extras_warnings(conn, quarter))
+
+    uncategorised = 0
+    for t in _txn_rows(conn, quarter):
+        cat, amount, vat = t["category"], dec(t["amount"]), dec(t["vat"])
+        gross = natural_gross(cat, amount)
+        label = f"{to_date(t['date']):%d/%m/%Y} {t['description']}"
+        if cat == UNCATEGORISED:
+            uncategorised += 1
+        elif cat == OTHER_SALE_VAT:
+            add(1, vat, "bank", t["id"], label)
+            add(6, gross - vat, "bank", t["id"], label)
+        elif cat == OTHER_SALE_NO_VAT:
+            add(6, gross, "bank", t["id"], label)
+        elif cat == EXPENSE_VAT:
+            add(4, vat, "bank", t["id"], label)
+            add(7, gross - vat, "bank", t["id"], label)
+            if vat > 0 and not t["receipts"]:
+                warns.append(f"{to_date(t['date']):%d/%m/%Y} {t['description']}: {_fmt(vat)} VAT "
+                             "reclaimed with no receipt attached.")
+        elif cat == EXPENSE_NO_VAT:
+            add(7, gross, "bank", t["id"], label)
+        if cat not in VAT_CATEGORIES and vat:
+            warns.append(f"{to_date(t['date']):%d/%m/%Y} {t['description']}: {_fmt(vat)} VAT entered "
+                         f"on a '{cat}' line is ignored. Change the category if VAT applies.")
+    if uncategorised:
+        warns.insert(0, f"{uncategorised} transaction{'s' if uncategorised != 1 else ''} in this "
+                        "quarter still uncategorised.")
+
+    for n in (1, 2, 4):
+        b[n] = pence(b[n])
+    b[3] = b[1] + b[2]
+    b[5] = b[3] - b[4]
+    for n in (6, 7, 8, 9):
+        b[n] = whole_pounds(b[n])
+
+    quarter = whole
+    filing = get_filing(conn, quarter)
+    if filing:
+        changed = [f"Box {n} {filing['boxes'][n]} → {box_str(n, b[n])}" for n in range(1, 10)
+                   if filing["boxes"].get(n) != box_str(n, b[n])]
+        if changed:
+            warns.insert(0, f"Filed on {filing['filed_on']:%d/%m/%Y}, but the figures have changed "
+                            f"since: {', '.join(changed)}. Small errors can be corrected on your next "
+                            "return; larger ones need form VAT652.")
+    return VatReturn(quarter, b, warns, cars_sold, car_lines,
+                     filing["filed_on"] if filing else None, detail,
+                     vat_from=vat_reg if first else quarter.start)
+
+
+@dataclass
+class QuarterProgress:
+    total: int
+    categorised: int
+    receipts_needed: int
+    receipts_attached: int
+    money_in: Decimal
+    money_out: Decimal
+
+    @property
+    def fraction(self) -> float:
+        steps = self.total + self.receipts_needed
+        return 1.0 if not steps else (self.categorised + self.receipts_attached) / steps
+
+
+def quarter_progress(conn, quarter: Quarter) -> QuarterProgress:
+    rows = _txn_rows(conn, quarter)
+    reg = vat_reg_date(conn)
+    needing = [t for t in rows if t["category"] == EXPENSE_VAT and dec(t["vat"]) > 0
+               and vat_counts(reg, to_date(t["date"]))]
+    amounts = [dec(t["amount"]) for t in rows]
+    return QuarterProgress(
+        total=len(rows),
+        categorised=sum(t["category"] != UNCATEGORISED for t in rows),
+        receipts_needed=len(needing),
+        receipts_attached=sum(bool(t["receipts"]) for t in needing),
+        money_in=sum((a for a in amounts if a > 0), ZERO),
+        money_out=sum((-a for a in amounts if a < 0), ZERO))
+
+
+# ---------------------------------------------------------------- exports
+
+def _cell(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, date):
+        return v.strftime("%d/%m/%Y")
+    if isinstance(v, Decimal):
+        return f"{v:.2f}"
+    return str(v)
+
+
+def export_quarter_csv(conn, quarter: Quarter) -> bytes:
+    result = calculate_return(conn, quarter)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([f"VAT return {quarter.label}", f"{quarter.start:%d/%m/%Y} to {quarter.end:%d/%m/%Y}"])
+    w.writerow([])
+    w.writerow(["VAT boxes"])
+    w.writerow(["Box", "Description", "Value"])
+    for n in range(1, 10):
+        w.writerow([n, BOX_LABELS[n], result.box_str(n)])
+    w.writerow([])
+    w.writerow(["Stock book"])
+    w.writerow(["Reg", "Make/model", "Scheme", "In quarter", "Purchase date", "Purchase price",
+                "Purchase VAT", "Sale date", "Sale price", "Part-ex allowance", "Margin", "Output VAT"])
+    for c in result.car_lines:
+        w.writerow([_cell(c[k]) for k in ("reg", "make_model", "scheme", "in_quarter", "purchase_date",
+                                          "purchase_price", "purchase_vat", "sale_date", "sale_price",
+                                          "px_allowance", "margin", "output_vat")])
+    w.writerow([])
+    w.writerow(["Bank transactions"])
+    w.writerow(["Date", "Description", "Amount", "Category", "VAT", "Receipts", "Notes"])
+    for t in _txn_rows(conn, quarter):
+        w.writerow([_cell(to_date(t["date"])), t["description"], t["amount"], t["category"], t["vat"],
+                    t["receipts"], t["notes"] or ""])
+    if result.warnings:
+        w.writerow([])
+        w.writerow(["Warnings"])
+        for msg in result.warnings:
+            w.writerow([msg])
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def bridging_csv(result: VatReturn) -> bytes:
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Box", "Description", "Value"])
+    for n in range(1, 10):
+        w.writerow([n, BOX_LABELS[n], result.box_str(n)])
+    return buf.getvalue().encode("utf-8-sig")
+
+
+def backup_zip(conn) -> bytes:
+    """A consistent copy of the database plus every receipt, as one zip."""
+    buf = io.BytesIO()
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / "vat.db"
+        dst = sqlite3.connect(copy)
+        conn.backup(dst)
+        dst.close()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(copy, "vat.db")
+            for name, base in (("receipts", receipts_dir(conn)), ("invoices", invoices_dir(conn)),
+                               ("documents", documents_dir(conn))):
+                if base.exists():
+                    for p in sorted(base.rglob("*")):
+                        if p.is_file():
+                            z.write(p, (Path(name) / p.relative_to(base)).as_posix())
+    return buf.getvalue()
+
+
+def receipts_zip(conn, quarter: Quarter) -> bytes | None:
+    base = receipts_dir(conn)
+    rows = conn.execute(
+        "SELECT r.path, r.filename, t.date, t.id AS txn_id FROM receipts r "
+        "JOIN transactions t ON t.id = r.txn_id WHERE t.date BETWEEN ? AND ? ORDER BY t.date, r.id",
+        (quarter.start.isoformat(), quarter.end.isoformat())).fetchall()
+    files = [(base / r["path"], f"{r['date']}_txn{r['txn_id']}_{r['filename']}") for r in rows]
+    files = [(p, a) for p, a in files if p.exists()]
+    if not files:
+        return None
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for path, arcname in files:
+            z.write(path, arcname)
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------- invoices
+
+INVOICE_PRICING = ["selling_price", "delivery", "accessories", "rf_licence", "cherished", "warranty",
+                   "warranty_ipt", "px_allowance", "hp_settlement", "finance", "deposit"]
+INVOICE_VEHICLE = ["make", "model", "colour", "first_reg", "mileage", "engine_no", "chassis_no",
+                   "mfr_date", "wheel_nut", "immobiliser", "warranty_no", "radio_code", "order_no", "keys"]
+MARGIN_SCHEME_TEXT = "Margin scheme - second-hand goods. VAT is not shown separately."
+_INVOICE_LIMITS = {"items": 9, "warranty_lines": 5, "special_instructions": 5}  # rows the layout fits
+_EXTRA_CHARGES = {"delivery": "delivery", "accessories": "accessories", "warranty": "warranty",
+                  "warranty_ipt": "warranty IPT"}
+
+
+def invoices_dir(conn: sqlite3.Connection) -> Path:
+    """Invoice PDFs live in ./invoices next to the database file."""
+    return receipts_dir(conn).parent / "invoices"
+
+
+def invoice_totals(items: list[dict], pricing: dict) -> dict:
+    """The price build-up exactly as invoice_pdf.build_invoice works it out."""
+    g = lambda k: float(pricing.get(k) or 0)  # noqa: E731
+    items_total = sum(float(it["cost"]) * int(it.get("qty", 1)) for it in items)
+    selling = g("selling_price") or items_total
+    sub1 = selling + g("delivery") + g("accessories")
+    total_price = sub1 + g("rf_licence") + g("cherished") + g("warranty") + g("warranty_ipt")
+    sub2 = total_price - g("px_allowance")
+    net = sub2 + g("hp_settlement")
+    balance1 = net - g("finance")
+    return {"items_total": items_total, "selling_price": selling, "sub_total": sub1,
+            "total_price": total_price, "after_px": sub2, "net_price": net, "after_finance": balance1,
+            "balance": balance1 - g("deposit")}
+
+
+_COUNTRIES = {"united kingdom", "uk", "u.k", "great britain", "gb", "england", "scotland", "wales",
+              "northern ireland"}
+
+
+def seller_details(biz: dict | None) -> dict:
+    """The seller block printed on invoices, from the business details."""
+    biz = biz or {}
+    office = [s.strip() for s in re.split(r"[\r\n,]+", biz.get("registered_office") or "") if s.strip()]
+    # The footer has one line for the address: a UK company doesn't need the country on it.
+    while len(office) > 1 and office[-1].lower().rstrip(".") in _COUNTRIES:
+        office.pop()
+    vrn = format_vrn(biz.get("vrn") or "")
+    return {"name": biz.get("company_name") or "", "phone": biz.get("phone") or "",
+            "email": biz.get("email") or "", "vat_no": vrn.removeprefix("GB ").strip(),
+            "address_line": ", ".join(office), "company_no": biz.get("company_number") or "",
+            "sort_code": biz.get("sort_code") or "", "account_no": biz.get("account_no") or ""}
+
+
+def seller_problems(biz: dict | None) -> list[str]:
+    s = seller_details(biz)
+    missing = [label for key, label in (("address_line", "registered office address"),
+                                        ("vat_no", "VAT number")) if not s[key]]
+    if not missing:
+        return []
+    return [f"Add your {' and '.join(missing)} on the Business page before creating invoices."]
+
+
+def last_salesperson(conn) -> str:
+    row = conn.execute("SELECT salesperson FROM invoices WHERE salesperson <> '' "
+                       "ORDER BY id DESC LIMIT 1").fetchone()
+    return row["salesperson"] if row else ""
+
+
+def _car(conn, car_id) -> dict | None:
+    return next((c for c in list_cars(conn) if c["id"] == car_id), None)
+
+
+def _lines(v) -> list[str]:
+    if isinstance(v, str):
+        v = v.splitlines()
+    return [text(s) for s in (v or []) if text(s)]
+
+
+def _party(p: dict | None) -> dict:
+    p = p or {}
+    return {"name": text(p.get("name")), "address": _lines(p.get("address")),
+            "email": text(p.get("email")), "phone": text(p.get("phone"))}
+
+
+def _invoice_input(conn, data: dict, current: dict | None = None) -> tuple[dict | None, list[str]]:
+    """Read invoice input from the form. Returns the invoices row (None without a car) and what's
+    missing or wrong. Whether it fits on the page is checked separately by invoice_fit."""
+    problems = seller_problems(get_business(conn))
+    car = _car(conn, int(data.get("vehicle_id") or 0))
+    if not car:
+        problems.append("Pick a car from the stock book.")
+    elif car["sale_date"] and car.get("sales_invoice_no") != (current or {}).get("invoice_no"):
+        problems.append(f"{car['reg']} is already marked sold in the stock book.")
+    buyer = _party(data.get("buyer"))
+    if not buyer["name"]:
+        problems.append("Enter the buyer's name.")
+    if not buyer["address"]:
+        problems.append("Enter the buyer's address.")
+    same = bool(data.get("deliver_same", True))
+    deliver = _party(data.get("deliver_to"))
+    if not same and not deliver["name"]:
+        problems.append("Enter the deliver-to name, or tick 'Same as buyer'.")
+    try:
+        inv_date = to_date(data.get("invoice_date"))
+    except ValueError:
+        inv_date = None
+    if not inv_date:
+        problems.append("Enter the invoice date.")
+    given = data.get("pricing") or {}
+    pricing = {k: float(dec(given.get(k)) or 0) for k in INVOICE_PRICING}
+    if pricing["selling_price"] <= 0:
+        problems.append("Enter a selling price above zero.")
+    if any(v < 0 for v in pricing.values()):
+        problems.append("Prices can't be negative.")
+    items = []
+    for it in data.get("items") or []:
+        desc, cost = text(it.get("desc")), dec(it.get("cost"))
+        if not desc and cost is None:
+            continue
+        if not desc:
+            problems.append("Every item row needs a description.")
+        qty = int(dec(it.get("qty")) or 1)
+        if not 1 <= qty <= 99:
+            problems.append("Item quantities run from 1 to 99.")
+        items.append({"desc": desc, "qty": max(1, min(qty, 99)), "cost": float(cost or 0)})
+    lists = {"items": items, "warranty_lines": _lines(data.get("warranty_lines")),
+             "special_instructions": _lines(data.get("special_instructions"))}
+    standard = bool(car) and car["scheme"] == STANDARD
+    for key, limit in _INVOICE_LIMITS.items():
+        room = limit - (1 if key == "special_instructions" and standard else 0)
+        if len(lists[key]) > room:
+            problems.append(f"Only {room} {key.replace('_', ' ')} fit on the invoice"
+                            + (" (one line is used for the VAT)." if room < limit else "."))
+    for who, party in (("buyer", buyer), ("deliver-to", None if same else deliver)):
+        if party and len(party["address"]) > _ADDRESS_LINES:
+            problems.append(f"Only {_ADDRESS_LINES} {who} address lines fit on the invoice.")
+    if not car:
+        return None, problems
+    vehicle = {k: text((data.get("vehicle") or {}).get(k)) for k in INVOICE_VEHICLE}
+    try:
+        vehicle["first_reg"] = iso(vehicle["first_reg"]) or ""
+    except ValueError:
+        problems.append("First registration isn't a valid date.")
+        vehicle["first_reg"] = ""
+    return {
+        "invoice_date": (inv_date or date.today()).isoformat(), "vehicle_id": car["id"],
+        "buyer_name": buyer["name"], "buyer_address": json.dumps(buyer["address"]),
+        "buyer_email": buyer["email"], "buyer_phone": buyer["phone"],
+        "deliver_same": 1 if same else 0,
+        "deliver_name": None if same else deliver["name"],
+        "deliver_address": None if same else json.dumps(deliver["address"]),
+        "deliver_email": None if same else deliver["email"],
+        "deliver_phone": None if same else deliver["phone"],
+        "salesperson": text(data.get("salesperson")), "vehicle": json.dumps(vehicle),
+        "items": json.dumps(items), "warranty_lines": json.dumps(lists["warranty_lines"]),
+        "special_instructions": json.dumps(lists["special_instructions"]),
+        "pricing": json.dumps(pricing),
+        # The margin scheme can't apply to a car bought with VAT shown.
+        "margin_scheme": 1 if data.get("margin_scheme") and car["scheme"] == MARGIN else 0,
+    }, problems
+
+
+def invoice_check(conn, data: dict, current: dict | None = None) -> dict:
+    """Everything wrong with a draft: `problems` (missing or invalid) and `fields`, the fields that
+    won't fit on the printed page, keyed like the form (e.g. 'buyer.address', 'items.0.desc')."""
+    row, problems = _invoice_input(conn, data, current)
+    fields = invoice_fit(conn, row, (current or {}).get("invoice_no")) if row else {}
+    return {"problems": problems, "fields": fields}
+
+
+def _clean_invoice(conn, data: dict, current: dict | None = None) -> dict:
+    """Validate invoice input from the form and return the invoices row (without its number)."""
+    check = invoice_check(conn, data, current)
+    problems = check["problems"] + list(dict.fromkeys(check["fields"].values()))
+    if problems:
+        raise ValueError(" ".join(problems))
+    row, _ = _invoice_input(conn, data, current)
+    return row
+
+
+def _parse_invoice(r) -> dict:
+    inv = dict(r)
+    for k, empty in (("buyer_address", "[]"), ("deliver_address", "[]"), ("vehicle", "{}"),
+                     ("items", "[]"), ("warranty_lines", "[]"), ("special_instructions", "[]"),
+                     ("pricing", "{}")):
+        inv[k] = json.loads(inv.get(k) or empty)
+    for k in ("margin_scheme", "deliver_same", "void"):
+        inv[k] = bool(inv.get(k))
+    inv["totals"] = invoice_totals(inv["items"], inv["pricing"])
+    return inv
+
+
+def _uk(v) -> str:
+    d = to_date(v)
+    return d.strftime("%d/%m/%Y") if d else ""
+
+
+def standard_vat_line(pricing: dict) -> str:
+    """VAT shown on a Standard-rated car invoice: 1/6 of the car, delivery and accessories."""
+    vatable = sum(Decimal(str(pricing.get(k) or 0)) for k in ("selling_price", "delivery", "accessories"))
+    return f"Incl. VAT at 20%: {_fmt(pence(vatable / 6))}"
+
+
+_ADDRESS_LINES = 4  # the name plus four address lines print in each address block
+_GAP = 3.0  # points kept clear between a value and its neighbour
+# Where invoice_pdf.py draws each block (PDF points), used to work out how much room each value has.
+_VEHICLE_GRID = [  # (label x, value right edge, rows)
+    (59.8, 189.2, [("Reg No", "reg"), ("Colour", "colour"), ("First Reg Date", "first_reg"),
+                   ("Wheel Nut No", "wheel_nut"), ("Immobiliser", "immobiliser")]),
+    (227.3, 352.7, [("Make", "make"), ("Engine No", "engine_no"), ("Mfr Date", "mfr_date"),
+                    ("Warranty No", "warranty_no"), ("Radio Code", "radio_code")]),
+    (418.8, 576.4, [("Model", "model"), ("Chassis No", "chassis_no"), ("Mileage", "mileage"),
+                    ("Order No", "order_no"), ("Key No", "keys")]),
+]
+_PRICE_ROWS = [  # (label, key whose value prints there; None for worked-out lines)
+    ("Selling Price", "selling_price"), ("Delivery Charge", "delivery"), ("Accessories", "accessories"),
+    ("Sub Total", "sub_total"), ("RF Licence", "rf_licence"), ("Cherished Transfer", "cherished"),
+    ("Warranty and Services", "warranty"), ("Warranty IPT", "warranty_ipt"), ("Total Price", "total_price"),
+    ("Less PX Allowance", "px_allowance"), ("Sub Total", "after_px"),
+    ("HP Settlement Amount", "hp_settlement"), ("Net Price", "net_price"), ("Finance Amount", "finance"),
+    ("Balance", "after_finance"), ("Less Deposit / Payments", "deposit"), ("Balance", "balance"),
+]
+_TOTAL_KEYS = {"sub_total", "total_price", "after_px", "net_price", "after_finance", "balance"}
+
+
+LOGO_BOX = (96.0, 52.5)  # invoice_pdf draws the logo stretched to exactly this size (points)
+
+
+def fit_logo(img):
+    """Pad a logo with transparent space to the invoice's logo box shape, so it isn't stretched."""
+    from PIL import Image
+
+    img = img.convert("RGBA")
+    ratio = LOGO_BOX[0] / LOGO_BOX[1]
+    w, h = img.size
+    canvas_size = (w, round(w / ratio)) if w / h > ratio else (round(h * ratio), h)
+    out = Image.new("RGBA", canvas_size, (255, 255, 255, 0))
+    out.paste(img, ((canvas_size[0] - w) // 2, (canvas_size[1] - h) // 2))
+    return out
+
+
+def _printable(ch: str) -> bool:
+    try:
+        ch.encode("cp1252")  # the encoding reportlab uses for its built-in Helvetica
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def invoice_fit(conn, row: dict, invoice_no: str | None = None) -> dict[str, str]:
+    """Fields too wide for their place on the invoice, measured with the invoice's own fonts.
+    Keys match the form ('buyer.name', 'vehicle.model', 'items.2.desc', 'pricing.finance', ...)."""
+    import invoice_pdf
+    from reportlab.pdfbase import pdfmetrics
+
+    fonts, scale = invoice_pdf._fonts()
+
+    def w(s, font="R", size=10.08):
+        return pdfmetrics.stringWidth(str(s), fonts[font], size) * scale
+
+    inv = _parse_invoice({**row, "invoice_no": invoice_no or next_invoice_no(conn)})
+    doc = invoice_document(conn, inv)
+    out: dict[str, str] = {}
+
+    builtin = fonts["R"] == "Helvetica"  # the built-in font only has Western European letters
+
+    def fit(key, value, room, size=10.08, what=None, font="R"):
+        if value in (None, "") or key in out:
+            return
+        if builtin:
+            bad_chars = sorted({ch for ch in str(value) if not _printable(ch)})
+            if bad_chars:
+                out[key] = (f"{what or 'This'} has {' '.join(bad_chars)}, which the invoice font can't print; "
+                            "use plain letters instead.")
+                return
+        if w(value, font, size) > room:
+            out[key] = f"{what or 'This'} is too long for its space on the invoice; shorten it."
+
+    # address blocks: name, address lines, email, phone
+    for key, x, right in (("buyer", 72.5, 218.6), ("deliver_to", 218.6, 435.1)):
+        party = doc["invoice_to"] if key == "buyer" else doc["deliver_to"]
+        if party:
+            room = right - x - _GAP
+            who = "Buyer" if key == "buyer" else "Deliver-to"
+            fit(f"{key}.name", party["name"], room, 7.92, f"{who} name")
+            for line in party["address"]:
+                fit(f"{key}.address", line, room, 7.92, f"A {who.lower()} address line")
+            fit(f"{key}.email", party.get("email"), room, 7.92, f"{who} email")
+            fit(f"{key}.phone", party.get("phone"), room, 7.92, f"{who} phone")
+
+    # sales invoice panel: values right-aligned against their labels
+    for label, key, value in (("Invoice No", "invoice_no", doc["invoice_no"]),
+                              ("Invoice Date", "invoice_date", doc["invoice_date"]),
+                              ("Stock Number", "stock_no", doc["stock_no"]),
+                              ("VAT Number", "seller.vat_no", doc["seller"]["vat_no"]),
+                              ("Salesperson", "salesperson", doc["salesperson"])):
+        fit(key, value, 583.4 - 435.1 - w(label) - _GAP, what=label)
+    for key in ("phone", "email"):
+        fit(f"seller.{key}", doc["seller"][key], 572.3 - 149.0 - 10, 9.12, f"Your {key} on the Business page")
+
+    # vehicle grid
+    values = {"reg": doc["reg"], **doc["vehicle"]}
+    for lx, vx, rows in _VEHICLE_GRID:
+        for label, key in rows:
+            fit("reg" if key == "reg" else f"vehicle.{key}", values.get(key), vx - lx - w(label) - _GAP, what=label)
+
+    # items box and its columns
+    for i, it in enumerate(doc["items"]):
+        fit(f"items.{i}.desc", it["desc"], 156.1 - 59.3 - _GAP, what="Item description")
+        fit(f"items.{i}.qty", it.get("qty", 1), 182.6 - 164.4 - _GAP, what="Quantity")
+        fit(f"items.{i}.cost", invoice_pdf.money(it["cost"]), 247.2 - 182.6 - _GAP, what="Item cost")
+    fit("items", invoice_pdf.money(inv["totals"]["items_total"]), 241.9 - 182.5 - _GAP, what="Items total")
+    for line in doc["warranty_lines"]:
+        fit("warranty_lines", line, 421.3 - 268.5 - _GAP, what="A warranty and services line")
+    for line in doc["special_instructions"]:
+        fit("special_instructions", line, 421.3 - 280.1 - _GAP, what="A special instruction")
+
+    # price build-up panel
+    amounts = {**inv["pricing"], **inv["totals"]}
+    for label, key in _PRICE_ROWS:
+        bold = key in ("total_price", "after_px") or (label == "Balance" and key == "balance")
+        room = 576.6 - 431.0 - w(label, "B" if bold else "R", 9.12) - _GAP
+        fit("pricing.total" if key in _TOTAL_KEYS else f"pricing.{key}", invoice_pdf.money(amounts[key]),
+            room, 9.12, "The total" if key in _TOTAL_KEYS else label)
+
+    # footer: payee name, bank details, then address and company number up to the price panel
+    s = doc["seller"]
+    fit("seller.name", s["name"].upper(), 200.0 - 48.5 - _GAP, 7.92, "Your company name on the Business page")
+    for label, key in (("Sort Code", "sort_code"), ("Account Number", "account_no")):
+        fit(f"seller.{key}", s.get(key), 200.0 - 48.5 - w(label + " ", "I", 7.92) - _GAP, 7.92,
+            f"Your {label.lower()} on the Business page")
+    fit("seller.address_line", s.get("address_line"), 421.3 - 200.0 - _GAP, 7.92,
+        "Your registered office address on the Business page")
+    if s.get("company_no"):
+        fit("seller.company_no", f"Registered in England & Wales No. {s['company_no']}", 421.3 - 200.0 - _GAP,
+            7.92, "Your company number on the Business page")
+    return out
+
+
+def invoice_document(conn, inv: dict) -> dict:
+    """The dict invoice_pdf.build_invoice draws from."""
+    car = _car(conn, inv["vehicle_id"]) or {}
+    vehicle = {**inv["vehicle"], "first_reg": _uk(inv["vehicle"].get("first_reg"))}
+    special = list(inv["special_instructions"])
+    if car.get("scheme") == STANDARD:
+        special.insert(0, standard_vat_line(inv["pricing"]))
+    deliver = None if inv["deliver_same"] else {
+        "name": inv["deliver_name"] or "", "address": inv["deliver_address"],
+        "email": inv["deliver_email"] or "-", "phone": inv["deliver_phone"] or "-"}
+    return {
+        "invoice_no": inv["invoice_no"], "invoice_date": _uk(inv["invoice_date"]),
+        "stock_no": car.get("stock_no") or "-", "salesperson": inv["salesperson"] or "-",
+        "reg": car.get("reg") or "", "seller": seller_details(get_business(conn)),
+        "invoice_to": {"name": inv["buyer_name"], "address": inv["buyer_address"],
+                       "email": inv["buyer_email"] or "-", "phone": inv["buyer_phone"] or "-"},
+        "deliver_to": deliver, "vehicle": vehicle, "items": inv["items"],
+        "warranty_lines": inv["warranty_lines"], "special_instructions": special,
+        "pricing": inv["pricing"], "margin_scheme": inv["margin_scheme"],
+        "margin_scheme_text": MARGIN_SCHEME_TEXT,
+    }
+
+
+def _write_pdf(conn, inv: dict) -> str:
+    import invoice_pdf  # reportlab is only loaded once invoices are used
+
+    reg = re.sub(r"[^A-Z0-9]", "", ((_car(conn, inv["vehicle_id"]) or {}).get("reg") or "").upper())
+    folder = invoices_dir(conn)
+    folder.mkdir(parents=True, exist_ok=True)
+    name = f"{inv['invoice_no']}_{reg or 'NOREG'}.pdf"
+    invoice_pdf.build_invoice(invoice_document(conn, inv), folder / name)
+    return f"invoices/{name}"
+
+
+def invoice_path(conn, inv: dict) -> Path | None:
+    return receipts_dir(conn).parent / inv["pdf_path"] if inv.get("pdf_path") else None
+
+
+def _apply_sale(conn, inv: dict) -> None:
+    """Mark the invoiced car sold in the stock book, so the VAT return includes the sale."""
+    p, v = inv["pricing"], inv["vehicle"]
+    sets = {"sale_date": inv["invoice_date"], "sale_price": money_str(dec(p["selling_price"])),
+            "px_allowance": money_str(dec(p["px_allowance"])) if p.get("px_allowance") else None,
+            "buyer_name": inv["buyer_name"], "sales_invoice_no": inv["invoice_no"]}
+    for k in ("colour", "first_reg", "mileage"):
+        if v.get(k):
+            sets[k] = v[k]
+    conn.execute(f"UPDATE cars SET {', '.join(f'{k} = ?' for k in sets)} WHERE id = ?",
+                 [*sets.values(), inv["vehicle_id"]])
+
+
+def _clear_sale(conn, car_id: int, invoice_no: str) -> None:
+    conn.execute("UPDATE cars SET sale_date = NULL, sale_price = NULL, px_allowance = NULL, "
+                 "buyer_name = NULL, sales_invoice_no = NULL WHERE id = ? AND sales_invoice_no = ?",
+                 (car_id, invoice_no))
+
+
+def get_invoice(conn, invoice_id: int) -> dict | None:
+    r = conn.execute("SELECT i.*, c.reg, c.scheme AS car_scheme FROM invoices i "
+                     "LEFT JOIN cars c ON c.id = i.vehicle_id WHERE i.id = ?", (invoice_id,)).fetchone()
+    return _parse_invoice(r) if r else None
+
+
+def list_invoices(conn) -> list[dict]:
+    rows = conn.execute("SELECT i.*, c.reg, c.scheme AS car_scheme FROM invoices i "
+                        "LEFT JOIN cars c ON c.id = i.vehicle_id ORDER BY CAST(i.invoice_no AS INTEGER) DESC")
+    return [_parse_invoice(r) for r in rows]
+
+
+def create_invoice(conn, data: dict) -> dict:
+    """Number, generate and save an invoice, and mark its car sold. Nothing is saved, and no number
+    used, if the PDF can't be made."""
+    row = _clean_invoice(conn, data)
+    pdf = None
+    try:
+        with conn:
+            row["invoice_no"] = next_invoice_no(conn)
+            row["created_at"] = datetime.now().isoformat(timespec="seconds")
+            inv = _parse_invoice(row)
+            pdf = row["pdf_path"] = _write_pdf(conn, inv)
+            cur = conn.execute(f"INSERT INTO invoices ({', '.join(row)}) "
+                               f"VALUES ({', '.join('?' for _ in row)})", list(row.values()))
+            _apply_sale(conn, inv)
+    except Exception:
+        if pdf:
+            (receipts_dir(conn).parent / pdf).unlink(missing_ok=True)
+        raise
+    match_car_payments(conn)
+    return get_invoice(conn, cur.lastrowid)
+
+
+def update_invoice(conn, invoice_id: int, data: dict) -> dict:
+    """Save edits under the same number, re-generate the PDF and update the stock book."""
+    old = get_invoice(conn, invoice_id)
+    if not old:
+        raise ValueError("Invoice not found.")
+    if old["void"]:
+        raise ValueError(f"Invoice {old['invoice_no']} is void and can't be edited.")
+    if list_credit_notes(conn, invoice_id):
+        raise ValueError(f"Invoice {old['invoice_no']} has a credit note, so it can't be edited.")
+    row = _clean_invoice(conn, data, current=old)
+    row["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    inv = _parse_invoice({**old, **row})
+    with conn:
+        if old["vehicle_id"] != inv["vehicle_id"]:
+            _clear_sale(conn, old["vehicle_id"], old["invoice_no"])
+        row["pdf_path"] = _write_pdf(conn, inv)
+        conn.execute(f"UPDATE invoices SET {', '.join(f'{k} = ?' for k in row)} WHERE id = ?",
+                     [*row.values(), invoice_id])
+        _apply_sale(conn, inv)
+    if old["pdf_path"] and old["pdf_path"] != row["pdf_path"]:  # reg changed with the car
+        invoice_path(conn, old).unlink(missing_ok=True)
+    match_car_payments(conn)
+    return get_invoice(conn, invoice_id)
+
+
+def regenerate_invoice_pdf(conn, invoice_id: int) -> dict:
+    """Redraw the PDF from the saved invoice, e.g. after the logo or business details change."""
+    inv = get_invoice(conn, invoice_id)
+    if not inv:
+        raise ValueError("Invoice not found.")
+    with conn:
+        conn.execute("UPDATE invoices SET pdf_path = ? WHERE id = ?", (_write_pdf(conn, inv), invoice_id))
+    return get_invoice(conn, invoice_id)
+
+
+def void_invoice(conn, invoice_id: int) -> dict:
+    """Invoices are never deleted or renumbered: voiding keeps the number and takes the sale back
+    out of the stock book, and so out of the VAT return."""
+    inv = get_invoice(conn, invoice_id)
+    if not inv:
+        raise ValueError("Invoice not found.")
+    if list_credit_notes(conn, invoice_id):
+        raise ValueError(f"Invoice {inv['invoice_no']} has a credit note, so it can't be voided.")
+    filed = _filed_quarter_for(conn, to_date(inv["invoice_date"]))
+    if filed:
+        raise ValueError(f"Invoice {inv['invoice_no']} is in {filed}, which is filed with HMRC. Issue a "
+                         "credit note instead, so the correction goes on your current return.")
+    with conn:
+        conn.execute("UPDATE invoices SET void = 1, updated_at = ? WHERE id = ?",
+                     (datetime.now().isoformat(timespec="seconds"), invoice_id))
+        _clear_sale(conn, inv["vehicle_id"], inv["invoice_no"])
+    return get_invoice(conn, invoice_id)
+
+
+def _pdf_png(path: Path, resolution: int) -> bytes:
+    import pdfplumber
+
+    with pdfplumber.open(path) as pdf:
+        img = pdf.pages[0].to_image(resolution=resolution).original
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def invoice_png(conn, invoice_id: int, resolution: int = 110) -> bytes:
+    inv = get_invoice(conn, invoice_id)
+    path = invoice_path(conn, inv) if inv else None
+    if not path or not path.exists():
+        raise ValueError("Invoice PDF not found. Use Re-generate PDF.")
+    return _pdf_png(path, resolution)
+
+
+def draft_png(conn, data: dict, current: dict | None = None, resolution: int = 110) -> bytes:
+    """Page 1 of an unsaved invoice exactly as it would print, marked DRAFT. Nothing is saved and
+    no invoice number is used; missing details just print blank."""
+    import invoice_pdf
+
+    row, _ = _invoice_input(conn, data, current)
+    if not row:
+        raise ValueError("Pick a car to preview the invoice.")
+    no = (current or {}).get("invoice_no") or next_invoice_no(conn)
+    inv = _parse_invoice({**row, "invoice_no": f"{no} DRAFT"})
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "draft.pdf"
+        invoice_pdf.build_invoice(invoice_document(conn, inv), out)
+        return _pdf_png(out, resolution)
+
+
+def invoice_extras_warnings(conn, quarter: Quarter) -> list[str]:
+    """Charges on an invoice besides the car aren't in the stock book, so would be missed."""
+    out = []
+    for r in conn.execute("SELECT i.invoice_no, i.pricing, c.reg FROM invoices i "
+                          "LEFT JOIN cars c ON c.id = i.vehicle_id WHERE i.void = 0 AND "
+                          "i.invoice_date BETWEEN ? AND ? ORDER BY CAST(i.invoice_no AS INTEGER)",
+                          (quarter.start.isoformat(), quarter.end.isoformat())):
+        p = json.loads(r["pricing"] or "{}")
+        extras = [f"{label} {_fmt(Decimal(str(p[k])))}" for k, label in _EXTRA_CHARGES.items() if p.get(k)]
+        if extras:
+            out.append(f"Invoice {r['invoice_no']} ({r['reg']}) also charges {', '.join(extras)}. Only the "
+                       "car is counted here: add VAT on delivery and accessories as an 'Other sale - 20% "
+                       "VAT' line (warranty sold as insurance is usually exempt).")
+    return out
+
+
+# ---------------------------------------------------------------- credit notes
+
+CREDIT_KINDS = {"return": "Car returned", "discount": "Price reduction"}
+
+
+def _filed_quarter_for(conn, d: date | None) -> str | None:
+    if not d:
+        return None
+    row = conn.execute("SELECT quarter_start, quarter_end FROM filings WHERE quarter_start <= ? AND quarter_end >= ?",
+                       (d.isoformat(), d.isoformat())).fetchone()
+    return Quarter(to_date(row["quarter_start"]), to_date(row["quarter_end"])).label if row else None
+
+
+def next_credit_no(conn) -> str:
+    nums = [int(m.group(1)) for (n,) in conn.execute("SELECT credit_no FROM credit_notes")
+            if (m := re.fullmatch(r"CN-(\d+)", n or ""))]
+    return f"CN-{(max(nums) + 1) if nums else 1:04d}"
+
+
+def list_credit_notes(conn, invoice_id: int | None = None) -> list[dict]:
+    sql = ("SELECT cn.*, c.reg, c.make_model, i.invoice_no FROM credit_notes cn LEFT JOIN cars c ON c.id = cn.car_id "
+           "LEFT JOIN invoices i ON i.id = cn.invoice_id")
+    rows = conn.execute(sql + (" WHERE cn.invoice_id = ?" if invoice_id else "") + " ORDER BY cn.id",
+                        (invoice_id,) if invoice_id else ())
+    out = []
+    for r in rows:
+        cn = dict(r)
+        for k in ("amount", "car_amount", "vat", "sale_price", "sale_vat"):
+            cn[k] = dec(cn[k]) if cn[k] is not None else None
+        cn["credit_date"], cn["sale_date"] = to_date(cn["credit_date"]), to_date(cn["sale_date"])
+        cn["kind_label"] = CREDIT_KINDS.get(cn["kind"], cn["kind"])
+        out.append(cn)
+    return out
+
+
+def _sale_vat(car: dict, price: Decimal, reg: date | None) -> Decimal:
+    """VAT on selling this car at `price`, by the same rules as the VAT return."""
+    if not vat_counts(reg, car["sale_date"]):
+        return pence(ZERO)
+    fee, fee_vat = car.get("buyer_fee") or ZERO, car.get("buyer_fee_vat") or ZERO
+    cost = car["purchase_price"]
+    if car["scheme"] == MARGIN and fee and not fee_vat and cost is not None:
+        cost += fee
+    return sale_figures(car["scheme"], cost, car["purchase_vat"], price)[0]
+
+
+def create_credit_note(conn, invoice_id: int, kind: str, credit_date, amount=None, reason: str = "") -> dict:
+    """A credit note against a sales invoice. A return takes the whole sale back and puts the car in
+    stock; a price reduction lowers the price. Either way the VAT comes back in the credit note's own
+    quarter, so a return already filed with HMRC is never changed."""
+    inv = get_invoice(conn, invoice_id)
+    if not inv or inv["void"]:
+        raise ValueError("Invoice not found, or it is void.")
+    if kind not in CREDIT_KINDS:
+        raise ValueError("Pick a returned car or a price reduction.")
+    d = to_date(credit_date)
+    if not d:
+        raise ValueError("Enter the credit note date.")
+    if d < to_date(inv["invoice_date"]):
+        raise ValueError("The credit note can't be dated before the invoice.")
+    earlier = list_credit_notes(conn, invoice_id)
+    if any(cn["kind"] == "return" for cn in earlier):
+        raise ValueError(f"Invoice {inv['invoice_no']} has already been credited for a return.")
+    car = _car(conn, inv["vehicle_id"])
+    if not car or car.get("sales_invoice_no") != inv["invoice_no"] or car["sale_price"] is None:
+        raise ValueError("The car on this invoice isn't marked sold by it.")
+    reg = vat_reg_date(conn)
+    discounts = sum((cn["car_amount"] for cn in earlier), ZERO)
+    price_now = car["sale_price"] - discounts
+    vat_now = _sale_vat(car, price_now, reg)
+    if kind == "return":
+        car_amount = price_now
+        total = invoice_due(inv) - sum((cn["amount"] for cn in earlier), ZERO)
+        vat = vat_now
+    else:
+        total = car_amount = pence(dec(amount) or ZERO)
+        if car_amount <= 0:
+            raise ValueError("Enter the amount to take off the price.")
+        if car_amount >= price_now:
+            raise ValueError("That's the whole price: use a returned car instead.")
+        vat = vat_now - _sale_vat(car, price_now - car_amount, reg)
+    row = {"credit_no": next_credit_no(conn), "invoice_id": invoice_id, "car_id": car["id"],
+           "credit_date": d.isoformat(), "kind": kind, "amount": money_str(total), "car_amount": money_str(car_amount),
+           "vat": money_str(vat), "reason": text(reason), "created_at": datetime.now().isoformat(timespec="seconds"),
+           # The sale it corrects: a sale made before VAT registration was never on a return, so neither is this.
+           "sale_date": car["sale_date"].isoformat()}
+    if kind == "return":
+        row.update(sale_price=money_str(car["sale_price"]),
+                   sale_vat=money_str(_sale_vat(car, car["sale_price"], reg)))
+    pdf = None
+    try:
+        with conn:
+            cur = conn.execute(f"INSERT INTO credit_notes ({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+                               list(row.values()))
+            cn = next(c for c in list_credit_notes(conn, invoice_id) if c["id"] == cur.lastrowid)
+            pdf = _write_credit_pdf(conn, cn, inv, car)
+            conn.execute("UPDATE credit_notes SET pdf_path = ? WHERE id = ?", (pdf, cn["id"]))
+            if kind == "return":  # back in stock, ready to sell again
+                _clear_sale(conn, car["id"], inv["invoice_no"])
+                conn.execute("UPDATE cars SET status = 'for_sale', status_at = ? WHERE id = ?",
+                             (d.isoformat(), car["id"]))
+    except Exception:
+        if pdf:
+            (receipts_dir(conn).parent / pdf).unlink(missing_ok=True)
+        raise
+    return next(c for c in list_credit_notes(conn, invoice_id) if c["id"] == cur.lastrowid)
+
+
+def _write_credit_pdf(conn, cn: dict, inv: dict, car: dict) -> str:
+    import credit_note_pdf
+
+    reg = re.sub(r"[^A-Z0-9]", "", (car.get("reg") or "").upper())
+    folder = invoices_dir(conn)
+    folder.mkdir(parents=True, exist_ok=True)
+    name = f"{cn['credit_no']}_{reg or 'NOREG'}.pdf"
+    lines = [(f"{car.get('reg') or ''} {car.get('make_model') or ''} returned: sale reversed"
+              if cn["kind"] == "return" else f"Price reduction on {car.get('reg') or ''} {car.get('make_model') or ''}",
+              cn["car_amount"])]
+    if cn["amount"] != cn["car_amount"]:
+        lines.append(("Other charges on the invoice", cn["amount"] - cn["car_amount"]))
+    vat_text = (MARGIN_SCHEME_TEXT if car["scheme"] == MARGIN
+                else f"Includes VAT at 20%: {_fmt(cn['vat'])}")
+    credit_note_pdf.build_credit_note({
+        "credit_no": cn["credit_no"], "credit_date": _uk(cn["credit_date"]), "invoice_no": inv["invoice_no"],
+        "invoice_date": _uk(inv["invoice_date"]), "reg": car.get("reg") or "", "make_model": car.get("make_model") or "",
+        "kind_label": cn["kind_label"], "reason": cn["reason"], "lines": lines, "total": cn["amount"],
+        "vat_text": vat_text, "seller": seller_details(get_business(conn)),
+        "buyer": {"name": inv["buyer_name"] or "", "address": inv["buyer_address"]},
+    }, folder / name)
+    return f"invoices/{name}"
+
+
+def credit_note_path(conn, cn: dict) -> Path | None:
+    return receipts_dir(conn).parent / cn["pdf_path"] if cn.get("pdf_path") else None
+
+
+# ---------------------------------------------------------------- invoice payments
+
+def invoice_due(inv: dict) -> Decimal:
+    """What the buyer side owes in all: the net price (after part-ex, plus any HP settlement)."""
+    return pence(Decimal(str(inv["totals"]["net_price"])))
+
+
+def invoice_payments(conn, invoice_id: int) -> list[dict]:
+    rows = conn.execute("SELECT * FROM invoice_payments WHERE invoice_id = ? ORDER BY paid_on, id",
+                        (invoice_id,))
+    return [{**dict(r), "paid_on": to_date(r["paid_on"]), "amount": dec(r["amount"])} for r in rows]
+
+
+def payment_status(conn, inv: dict) -> dict:
+    """Paid so far (a deposit on the invoice counts) against what's due."""
+    paid = pence(Decimal(str(inv["pricing"].get("deposit") or 0))) + sum(
+        (p["amount"] for p in invoice_payments(conn, inv["id"])), ZERO)
+    credited = sum((cn["amount"] for cn in list_credit_notes(conn, inv["id"])), ZERO)
+    due = invoice_due(inv) - credited
+    if inv["void"]:
+        status = "void"
+    elif paid > due:
+        status = "refund_owed"
+    elif credited and due <= 0:
+        status = "credited"
+    else:
+        status = "paid" if paid >= due else "part_paid" if paid > 0 else "unpaid"
+    return {"due": due, "paid": paid, "outstanding": max(due - paid, ZERO), "status": status,
+            "credited": credited, "refund_owed": max(paid - due, ZERO)}
+
+
+def add_payment(conn, invoice_id: int, paid_on, amount, method: str = "", note: str = "",
+                txn_id: int | None = None) -> int:
+    inv = get_invoice(conn, invoice_id)
+    if not inv:
+        raise ValueError("Invoice not found.")
+    if inv["void"]:
+        raise ValueError(f"Invoice {inv['invoice_no']} is void.")
+    amt = dec(amount)
+    if not amt or (amt <= 0 and method != "Refund"):
+        raise ValueError("Enter the amount received.")
+    with conn:
+        cur = conn.execute("INSERT INTO invoice_payments (invoice_id, paid_on, amount, method, note, txn_id) "
+                           "VALUES (?, ?, ?, ?, ?, ?)",
+                           (invoice_id, iso(paid_on), money_str(amt), text(method), text(note), txn_id))
+    return cur.lastrowid
+
+
+def delete_payment(conn, payment_id: int) -> None:
+    with conn:
+        conn.execute("DELETE FROM invoice_payments WHERE id = ?", (payment_id,))
+
+
+def pay_invoice_from_bank(conn, txn_id: int, invoice_id: int) -> int:
+    """Record a bank line (money in) as a payment against an invoice. The line becomes a car sale
+    linked to the car, so it isn't counted again in the VAT return (the sale comes from the stock book)."""
+    t = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
+    inv = get_invoice(conn, invoice_id)
+    if not t or not inv:
+        raise ValueError("Bank line or invoice not found.")
+    amount = dec(t["amount"])
+    if amount < 0 and payment_status(conn, inv)["refund_owed"] <= 0:
+        raise ValueError(f"No refund is owed on invoice {inv['invoice_no']}; only money coming in can pay it.")
+    if conn.execute("SELECT 1 FROM invoice_payments WHERE txn_id = ?", (txn_id,)).fetchone():
+        raise ValueError("That bank line is already recorded as a payment.")
+    # Money out against an invoice is a refund to the buyer (after a credit note).
+    pid = add_payment(conn, invoice_id, t["date"], amount, "Bank transfer" if amount > 0 else "Refund",
+                      t["description"], txn_id)
+    with conn:
+        conn.execute("UPDATE transactions SET category = ?, car_id = ?, vat = '0.00', vat_manual = 0 "
+                     "WHERE id = ?", (CAR_SALE, inv["vehicle_id"], txn_id))
+    return pid
+
+
+# ---------------------------------------------------------------- car journey
+
+def update_car(conn, car_id: int, fields: dict) -> dict:
+    """Change some of a car's details from its panel. Moving status stamps the date it moved."""
+    car = _car(conn, car_id)
+    if not car:
+        raise ValueError("Car not found.")
+    unknown = set(fields) - set(CAR_DETAIL_FIELDS)
+    if unknown:
+        raise ValueError(f"Can't change {', '.join(sorted(unknown))} here.")
+    if "status" in fields and fields["status"] not in CAR_STATUSES:
+        raise ValueError("Unknown status.")
+    if fields.get("status") and car["sale_date"]:
+        raise ValueError(f"{car['reg']} is sold; its stage now follows the invoice.")
+    scheme = fields.get("scheme", car["scheme"])
+    if scheme not in CAR_SCHEMES:
+        raise ValueError("Pick Margin or Standard.")
+    sets = {k: _car_value(k, v, scheme) for k, v in fields.items() if k != "scheme"}
+    if "scheme" in fields:
+        sets["scheme"] = scheme
+        if scheme != STANDARD:
+            sets["purchase_vat"] = None
+    if "status" in fields and fields["status"] != car.get("status"):
+        sets["status_at"] = date.today().isoformat()
+    fee = dec(sets["buyer_fee"]) if "buyer_fee" in sets else car.get("buyer_fee")
+    fee_vat = dec(sets["buyer_fee_vat"]) if "buyer_fee_vat" in sets else car.get("buyer_fee_vat")
+    if fee_vat and (not fee or fee_vat > fee):
+        raise ValueError("The buyer's fee VAT can't be more than the fee itself.")
+    if sets:
+        with conn:
+            conn.execute(f"UPDATE cars SET {', '.join(f'{k} = ?' for k in sets)} WHERE id = ?",
+                         [*sets.values(), car_id])
+    match_car_payments(conn)
+    return _car(conn, car_id)
+
+
+def link_transaction(conn, txn_id: int, car_id: int | None) -> None:
+    """Tie a bank line (a prep cost, repair, transport...) to a car, or untie it. The line keeps its
+    own category, so its VAT is counted exactly as before; the link only feeds the car's profit."""
+    if car_id is not None and not _car(conn, car_id):
+        raise ValueError("Car not found.")
+    with conn:
+        conn.execute("UPDATE transactions SET car_id = ? WHERE id = ?", (car_id, txn_id))
+
+
+def car_costs(conn, car_id: int) -> list[dict]:
+    rows = conn.execute("SELECT t.*, (SELECT COUNT(*) FROM receipts r WHERE r.txn_id = t.id) AS receipts "
+                        "FROM transactions t WHERE t.car_id = ? AND t.category IN (?, ?, ?) "
+                        "ORDER BY t.date, t.id", (car_id, EXPENSE_VAT, EXPENSE_NO_VAT, UNCATEGORISED))
+    out = []
+    reg = vat_reg_date(conn)
+    for r in rows:
+        gross = -dec(r["amount"])
+        vat = dec(r["vat"]) if r["category"] == EXPENSE_VAT and vat_counts(reg, to_date(r["date"])) else ZERO
+        out.append({"id": r["id"], "date": to_date(r["date"]), "description": r["description"],
+                    "category": r["category"], "gross": gross, "vat": vat, "net": gross - vat,
+                    "receipts": r["receipts"]})
+    return out
+
+
+def documents_dir(conn) -> Path:
+    return receipts_dir(conn).parent / "documents"
+
+
+def add_car_document(conn, car_id: int, kind: str, filename: str, data: bytes) -> int:
+    """Keep a document with the car (the auction purchase invoice HMRC expects for margin cars)."""
+    if not _car(conn, car_id):
+        raise ValueError("Car not found.")
+    folder = documents_dir(conn) / str(car_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    name = re.sub(r"[^A-Za-z0-9._ -]", "_", Path(filename).name) or "document"
+    target, n = folder / name, 1
+    while target.exists():
+        target = folder / f"{Path(name).stem}_{n}{Path(name).suffix}"
+        n += 1
+    target.write_bytes(data)
+    with conn:
+        cur = conn.execute("INSERT INTO car_documents (car_id, kind, filename, path, uploaded_at) "
+                           "VALUES (?, ?, ?, ?, ?)",
+                           (car_id, text(kind) or "Document", target.name, f"{car_id}/{target.name}",
+                            datetime.now().isoformat(timespec="seconds")))
+    return cur.lastrowid
+
+
+def list_car_documents(conn, car_id: int) -> list[dict]:
+    return [dict(r) for r in conn.execute("SELECT * FROM car_documents WHERE car_id = ? ORDER BY id",
+                                          (car_id,))]
+
+
+def delete_car_document(conn, doc_id: int) -> None:
+    row = conn.execute("SELECT path FROM car_documents WHERE id = ?", (doc_id,)).fetchone()
+    if row:
+        (documents_dir(conn) / row["path"]).unlink(missing_ok=True)
+        with conn:
+            conn.execute("DELETE FROM car_documents WHERE id = ?", (doc_id,))
+
+
+def car_overview(conn, today: date | None = None) -> list[dict]:
+    """Every car with its stage, money and paperwork worked out, for the stock board and Home."""
+    today = today or date.today()
+    paid_purchases = {r["car_id"] for r in conn.execute(
+        "SELECT car_id FROM transactions WHERE category = ? AND car_id IS NOT NULL", (CAR_PURCHASE,))}
+    credits = list_credit_notes(conn)
+    returned = {cn["invoice_id"] for cn in credits if cn["kind"] == "return"}
+    invoices = {}
+    for inv in list_invoices(conn):
+        if not inv["void"] and inv["id"] not in returned:
+            invoices.setdefault(inv["vehicle_id"], inv)
+    docs = {r["car_id"]: r["n"] for r in conn.execute(
+        "SELECT car_id, COUNT(*) AS n FROM car_documents GROUP BY car_id")}
+    out = []
+    reg = vat_reg_date(conn)
+    for c in list_cars(conn):
+        # VAT on the purchase is only reclaimed if the car was still held on the registration date.
+        if c["sale_date"] and not vat_counts(reg, c["sale_date"]):
+            c = {**c, "purchase_vat": None, "buyer_fee_vat": None}
+        fee, fee_vat = c.get("buyer_fee") or ZERO, c.get("buyer_fee_vat") or ZERO
+        costs = car_costs(conn, c["id"])
+        inv = invoices.get(c["id"])
+        pay = payment_status(conn, inv) if inv else None
+        if c["sale_date"]:
+            stage = "completed" if pay and pay["status"] == "paid" else "sold"
+        else:
+            stage = c.get("status") or "bought"
+        bill_paid = bool(c.get("purchase_paid_on")) or c["id"] in paid_purchases or bool(c.get("px_for"))
+        end = c["sale_date"] or today
+        cost_net = sum((x["net"] for x in costs), ZERO)
+        # What the car cost: price (net of VAT on a Standard car) plus the buyer's fee net of any VAT.
+        bought_for = None
+        if c["purchase_price"] is not None:
+            bought_for = (c["purchase_price"] - (c["purchase_vat"] or ZERO if c["scheme"] == STANDARD else ZERO)
+                          + fee - fee_vat)
+        profit = vat_due = takings = None
+        if c["sale_price"] is not None:
+            margin_cost = (c["purchase_price"] + fee if c["scheme"] == MARGIN and fee and not fee_vat
+                           and c["purchase_price"] is not None else c["purchase_price"])
+            vat_due, _, _ = sale_figures(c["scheme"], margin_cost, c["purchase_vat"], c["sale_price"])
+            if not vat_counts(reg, c["sale_date"]):
+                vat_due = pence(ZERO)  # sold before VAT registration: no VAT on the sale
+            # Price reductions given later by credit note (on this sale's invoice).
+            sale_inv = invoices.get(c["id"])
+            disc = [cn for cn in credits if cn["kind"] == "discount" and sale_inv and cn["invoice_id"] == sale_inv["id"]]
+            discount = sum((cn["car_amount"] for cn in disc), ZERO)
+            vat_due -= sum((cn["vat"] for cn in disc), ZERO)
+            takings = c["sale_price"] - discount  # what the buyer pays for the car after any credit
+            if bought_for is not None:
+                profit = takings - vat_due - bought_for - cost_net
+        stage_since = c.get("status_at") or c["purchase_date"]
+        out.append({
+            **c, "stage": stage, "stage_label": CAR_STAGES[stage], "bill_paid": bill_paid,
+            "days_in_stock": (end - c["purchase_date"]).days if c["purchase_date"] else None,
+            "days_in_stage": (today - stage_since).days if stage_since and not c["sale_date"] else None,
+            "costs": costs, "costs_net": cost_net, "bought_for": bought_for, "vat_due": vat_due,
+            "profit": profit, "takings": takings, "documents": docs.get(c["id"], 0),
+            "mileage_history": json.loads(c.get("mileage_history") or "[]"),
+            "invoice": {"id": inv["id"], "invoice_no": inv["invoice_no"], **pay} if inv else None,
+            "credit_notes": [{"credit_no": cn["credit_no"], "kind_label": cn["kind_label"], "amount": cn["amount"],
+                              "credit_date": cn["credit_date"], "invoice_no": cn["invoice_no"]}
+                             for cn in credits if cn["car_id"] == c["id"]],
+        })
+    return out
+
+
+def profit_and_loss(conn, period, cars: list[dict] | None = None) -> dict:
+    """The period's result: profit on cars sold, less running costs not tied to a car, plus other
+    income. Costs tied to a car are already in that car's profit. All figures exclude VAT that
+    is reclaimed or paid to HMRC."""
+    cars = cars if cars is not None else car_overview(conn)
+    sold = [c for c in cars if period.contains(c["sale_date"])]
+    reg = vat_reg_date(conn)
+    running = other = ZERO
+    for t in _txn_rows(conn, Quarter(period.start, period.end)):
+        amount = dec(t["amount"])
+        vat = dec(t["vat"]) if t["category"] in VAT_CATEGORIES and vat_counts(reg, to_date(t["date"])) else ZERO
+        if t["category"] in EXPENSE_CATEGORIES and not t["car_id"]:
+            running += -amount - vat
+        elif t["category"] in (OTHER_SALE_VAT, OTHER_SALE_NO_VAT):
+            other += amount - vat
+    car_profit = sum((c["profit"] or ZERO for c in sold), ZERO)
+    takings = sum((c["takings"] or ZERO for c in sold), ZERO)
+    vat_on_sales = sum((c["vat_due"] or ZERO for c in sold), ZERO)
+    return {"label": period.label, "takings": takings, "sales_ex_vat": takings - vat_on_sales,
+            "car_profit": car_profit, "running_costs": running, "other_income": other,
+            "net_profit": car_profit - running + other, "cars_sold": len(sold)}
+
+
+def home_summary(conn, today: date | None = None, period: "Period | None" = None) -> dict:
+    """Everything the Home page shows: this quarter, stock, what needs doing, what's next to file.
+    Sales use `period` when given (the picker's choice), else the quarter in progress."""
+    today = today or date.today()
+    biz = get_business(conn) or {}
+    stagger = biz.get("stagger") or "MAR"
+    reg = to_date(biz.get("vat_reg_date"))
+    q = quarter_for(today, stagger)
+    current = calculate_return(conn, q)
+    cars = car_overview(conn, today)
+    in_stock = [c for c in cars if not c["sale_date"]]
+    sold_in = period or q
+    sold_q = [c for c in cars if sold_in.contains(c["sale_date"])]
+
+    # The latest ended quarter, unless it's already marked filed (earlier returns were likely
+    # filed before this app was used).
+    next_file = None
+    ended = recent_quarters(stagger, today, reg)[1:2]
+    if ended and not get_filing(conn, ended[0]):
+        past = ended[0]
+        r = calculate_return(conn, past)
+        next_file = {"quarter": past.label, "id": past.start, "net": r.boxes[5],
+                     "deadline": filing_deadline(past), "checks": len(r.warnings),
+                     "overdue": today > filing_deadline(past)}
+
+    actions = []
+    for c in in_stock:
+        if not c["bill_paid"]:
+            actions.append({"kind": "bill", "car_id": c["id"],
+                            "text": f"{c['reg']}: purchase bill not marked paid"
+                                    + (f" ({c['auction_house']})" if c.get("auction_house") else "")})
+        if c["stage"] == "in_prep" and (c["days_in_stage"] or 0) > PREP_DAYS_WARN:
+            actions.append({"kind": "prep", "car_id": c["id"],
+                            "text": f"{c['reg']}: in prep for {c['days_in_stage']} days"})
+        if c.get("scheme") == MARGIN and not list_car_documents(conn, c["id"]):
+            actions.append({"kind": "document", "car_id": c["id"],
+                            "text": f"{c['reg']}: no purchase invoice kept"})
+    for c in cars:
+        inv = c["invoice"]
+        if inv and inv["status"] in ("unpaid", "part_paid"):
+            actions.append({"kind": "payment", "car_id": c["id"], "invoice_id": inv["id"],
+                            "text": f"Invoice {inv['invoice_no']} ({c['reg']}): "
+                                    f"{_fmt(inv['outstanding'])} still to come in"})
+    for inv in list_invoices(conn):  # after a credit note, money may be owed back to the buyer
+        if not inv["void"] and list_credit_notes(conn, inv["id"]):
+            owed = payment_status(conn, inv)["refund_owed"]
+            if owed > 0:
+                actions.append({"kind": "payment", "car_id": inv["vehicle_id"], "invoice_id": inv["id"],
+                                "text": f"Invoice {inv['invoice_no']} ({inv['reg']}): refund {_fmt(owed)} to "
+                                        f"{inv['buyer_name']}"})
+    progress = quarter_progress(conn, q)
+    uncategorised = [t for t in _txn_rows(conn) if t["category"] == UNCATEGORISED]
+    if uncategorised:
+        actions.append({"kind": "bank", "text": f"{len(uncategorised)} bank "
+                        f"line{'s' if len(uncategorised) != 1 else ''} to categorise"})
+
+    return {
+        "quarter": {"id": q.start, "label": q.label, "deadline": filing_deadline(q)},
+        "vat_so_far": current.boxes[5], "output_vat": current.boxes[1], "input_vat": current.boxes[4],
+        "stock": {"count": len(in_stock), "at_cost": sum((c["bought_for"] or ZERO for c in in_stock), ZERO),
+                  "by_stage": {s: sum(c["stage"] == s for c in in_stock) for s in CAR_STATUSES}},
+        "sold": {"label": period.label if period else q.label,
+                 "count": len(sold_q), "profit": sum((c["profit"] or ZERO for c in sold_q), ZERO),
+                 "takings": sum((c["takings"] or ZERO for c in sold_q), ZERO)},
+        "pnl": profit_and_loss(conn, sold_in, cars),
+        "next_to_file": next_file, "actions": actions,
+        "progress": {"total": progress.total, "categorised": progress.categorised,
+                     "receipts_needed": progress.receipts_needed,
+                     "receipts_attached": progress.receipts_attached, "warnings": len(current.warnings)},
+        "recent_invoices": [{"id": i["id"], "invoice_no": i["invoice_no"], "reg": i["reg"],
+                             "buyer_name": i["buyer_name"], "total": i["totals"]["total_price"],
+                             "invoice_date": i["invoice_date"], "void": i["void"]}
+                            for i in list_invoices(conn)[:5]],
+        "to_categorise": [{"id": t["id"], "date": to_date(t["date"]), "description": t["description"],
+                           "amount": dec(t["amount"])} for t in uncategorised[-5:][::-1]],
+        "salesperson": last_salesperson(conn),
+    }
+
+
+def customers(conn) -> list[dict]:
+    """Buyers from earlier invoices, newest first, for picking a returning or trade buyer."""
+    seen, out = set(), []
+    for r in conn.execute("SELECT buyer_name, buyer_address, buyer_email, buyer_phone FROM invoices "
+                          "WHERE void = 0 ORDER BY id DESC"):
+        key = r["buyer_name"].strip().lower()
+        if key not in seen:
+            seen.add(key)
+            out.append({"name": r["buyer_name"], "address": json.loads(r["buyer_address"] or "[]"),
+                        "email": r["buyer_email"] or "", "phone": r["buyer_phone"] or ""})
+    return out
+
+
+# ---------------------------------------------------------------- vehicle checks and reminders
+
+TAX_MOT_WARN_DAYS = 30
+VAT_WARN_DAYS = 14
+INVOICE_UNPAID_DAYS = 14
+
+
+def apply_vehicle_check(conn, car_id: int, result: dict) -> dict:
+    """Save a DVLA/DVSA lookup on the car: tax and MOT dates, fuel, engine, mileage history, and the
+    make/model, colour and first registration where the stock book doesn't have them yet."""
+    car = _car(conn, car_id)
+    if not car:
+        raise ValueError("Car not found.")
+    sets = {"tax_due": iso(result.get("tax_due")), "mot_expiry": iso(result.get("mot_expiry")),
+            "fuel_type": text(result.get("fuel")) or None,
+            "engine_cc": str(result["engine_cc"]) if result.get("engine_cc") else None,
+            "mileage_history": json.dumps(result.get("mileage_history") or []),
+            "checked_at": date.today().isoformat()}
+    for col, key in (("make_model", "make_model"), ("colour", "colour"), ("first_reg", "first_reg")):
+        if not car.get(col) and result.get(key):
+            sets[col] = _car_value(col, result[key])
+    if not car.get("mileage") and result.get("last_mot_miles"):
+        sets["mileage"] = str(result["last_mot_miles"])
+    with conn:
+        conn.execute(f"UPDATE cars SET {', '.join(f'{k} = ?' for k in sets)} WHERE id = ?",
+                     [*sets.values(), car_id])
+    return _car(conn, car_id)
+
+
+def reminders(conn, today: date | None = None) -> list[dict]:
+    """What needs attention soon, most urgent first: kind, level ('overdue'|'soon'), text, link."""
+    today = today or date.today()
+    out: list[dict] = []
+
+    def add(kind, level, msg, link, when=None):
+        out.append({"kind": kind, "level": level, "text": msg, "link": link, "date": when})
+
+    biz = get_business(conn) or {}
+    if biz:
+        stagger, reg = biz.get("stagger") or "MAR", to_date(biz.get("vat_reg_date"))
+        for q in recent_quarters(stagger, today, reg)[1:2]:  # the latest ended quarter
+            if not get_filing(conn, q):
+                due = filing_deadline(q)
+                if today > due:
+                    add("vat", "overdue", f"VAT return for {q.label} was due {due:%d %b %Y}", "#/return", due)
+                elif (due - today).days <= VAT_WARN_DAYS:
+                    add("vat", "soon", f"VAT return for {q.label} due {due:%d %b %Y} "
+                        f"({(due - today).days} days)", "#/return", due)
+
+    for c in car_overview(conn, today):
+        link = f"#/car/{c['id']}"
+        if c["sale_date"]:
+            inv = c["invoice"]
+            if inv and inv["status"] in ("unpaid", "part_paid") and (today - c["sale_date"]).days > INVOICE_UNPAID_DAYS:
+                add("invoice", "overdue", f"Invoice {inv['invoice_no']} ({c['reg']}): {_fmt(inv['outstanding'])} "
+                    f"unpaid after {(today - c['sale_date']).days} days", "#/invoices", c["sale_date"])
+            continue
+        if not c["bill_paid"]:
+            add("bill", "soon", f"{c['reg']}: purchase bill not marked paid", link, c["purchase_date"])
+        if c["stage"] == "in_prep" and (c["days_in_stage"] or 0) > PREP_DAYS_WARN:
+            add("prep", "soon", f"{c['reg']}: in prep for {c['days_in_stage']} days", link)
+        for what, due in (("Road tax", c.get("tax_due")), ("MOT", c.get("mot_expiry"))):
+            if due and due < today:
+                add(what.lower().replace(" ", "_"), "overdue", f"{c['reg']}: {what} expired {due:%d %b %Y}", link, due)
+            elif due and (due - today).days <= TAX_MOT_WARN_DAYS:
+                add(what.lower().replace(" ", "_"), "soon",
+                    f"{c['reg']}: {what} runs out {due:%d %b %Y} ({(due - today).days} days)", link, due)
+    order = {"overdue": 0, "soon": 1}
+    out.sort(key=lambda r: (order[r["level"]], r["kind"] != "vat", r["date"] or date.max))  # VAT first
+    return out
+
+
+# ---------------------------------------------------------------- periods (quarter, year, tax year...)
+
+PERIOD_KINDS = {"quarter": "Quarter", "year": "Year", "tax_year": "Tax year", "financial_year": "Financial year",
+                "all": "All time"}
+
+
+@dataclass(frozen=True)
+class Period:
+    id: str
+    kind: str
+    label: str
+    start: date
+    end: date
+
+    def contains(self, d: date | None) -> bool:
+        return d is not None and self.start <= d <= self.end
+
+
+def _year_end_day(year: int, mm_dd: str) -> date:
+    m, d = (int(x) for x in mm_dd.split("-"))
+    return date(year, m, min(d, calendar.monthrange(year, m)[1]))
+
+
+def business_start(business: dict) -> date | None:
+    """When the business began: incorporation, else VAT registration."""
+    for f in ("incorporation_date", "vat_reg_date"):
+        try:
+            d = to_date(business.get(f))
+        except ValueError:
+            d = None
+        if d:
+            return d
+    return None
+
+
+def _first_date(conn, business: dict) -> date:
+    """Where the periods start: the first day of the VAT quarter the business began in (else the
+    earliest car or bank line). Nothing before it is offered."""
+    began = business_start(business)
+    if began:
+        return quarter_for(began, business.get("stagger") or "MAR").start
+    found = []
+    for sql in ("SELECT MIN(purchase_date) FROM cars", "SELECT MIN(date) FROM transactions"):
+        found.append(to_date(conn.execute(sql).fetchone()[0]))
+    return min(d for d in found if d) if any(found) else date.today()
+
+
+def period_options(conn, today: date | None = None) -> dict:
+    """Every period the picker offers, newest first, per kind."""
+    today = today or date.today()
+    biz = get_business(conn) or {}
+    stagger = biz.get("stagger") or "MAR"
+    first = _first_date(conn, biz)
+    years = range(today.year, first.year - 1, -1)
+    out = {"quarter": [], "year": [], "tax_year": [], "financial_year": []}
+    q = quarter_for(today, stagger)
+    while q.end >= first and len(out["quarter"]) < 40:
+        out["quarter"].append(Period(f"q:{q.start}", "quarter", q.label, q.start, q.end))
+        q = quarter_for(date.fromordinal(q.start.toordinal() - 1), stagger)
+    for y in years:
+        out["year"].append(Period(f"y:{y}", "year", str(y), date(y, 1, 1), date(y, 12, 31)))
+    for y in range(today.year if today >= date(today.year, 4, 6) else today.year - 1, first.year - 2, -1):
+        if date(y + 1, 4, 5) < first:
+            break
+        out["tax_year"].append(Period(f"t:{y}", "tax_year", f"{y}/{str(y + 1)[2:]} tax year",
+                                      date(y, 4, 6), date(y + 1, 4, 5)))
+    ye = biz.get("year_end") or ""
+    if re.fullmatch(r"\d{2}-\d{2}", ye):
+        y = today.year if today <= _year_end_day(today.year, ye) else today.year + 1
+        while True:
+            end = _year_end_day(y, ye)
+            start = date.fromordinal(_year_end_day(y - 1, ye).toordinal() + 1)
+            if end < first:
+                break
+            out["financial_year"].append(Period(f"f:{y}", "financial_year", f"Year to {end:%d %b %Y}", start, end))
+            y -= 1
+    out["all"] = [Period("all", "all", "All time", first, today)]
+    return out
+
+
+def period_by_id(conn, pid: str, today: date | None = None) -> Period:
+    for options in period_options(conn, today).values():
+        for p in options:
+            if p.id == pid:
+                return p
+    raise ValueError("Unknown period.")
+
+
+def quarters_in(conn, period: Period) -> list[Quarter]:
+    """VAT quarters that end inside the period, oldest first (each return belongs where it ends)."""
+    stagger = (get_business(conn) or {}).get("stagger") or "MAR"
+    out, q = [], quarter_for(period.end, stagger)
+    while q.end >= period.start:
+        if period.contains(q.end):
+            out.append(q)
+        q = quarter_for(date.fromordinal(q.start.toordinal() - 1), stagger)
+    return out[::-1]
+
+
+def period_summary(conn, period: Period, today: date | None = None) -> dict:
+    """A period at a glance: each VAT quarter's boxes and filing, the totals, and car and bank money."""
+    today = today or date.today()
+    rows, totals = [], {n: ZERO for n in range(1, 10)}
+    for q in quarters_in(conn, period):
+        r = calculate_return(conn, q)
+        for n in range(1, 10):
+            totals[n] += r.boxes[n]
+        rows.append({"id": q.start, "label": q.label, "start": q.start, "end": q.end,
+                     "boxes": {n: r.box_str(n) for n in range(1, 10)}, "net": r.boxes[5],
+                     "filed_on": r.filed_on, "deadline": filing_deadline(q), "in_progress": q.contains(today),
+                     "warnings": len(r.warnings), "cars_sold": len(r.cars_sold)})
+    cars = car_overview(conn, today)
+    sold = [c for c in cars if period.contains(c["sale_date"])]
+    bought = [c for c in cars if period.contains(c["purchase_date"])]
+    amounts = [dec(t["amount"]) for t in _txn_rows(conn) if period.contains(to_date(t["date"]))]
+    return {
+        "period": {"id": period.id, "kind": period.kind, "label": period.label,
+                   "start": period.start, "end": period.end},
+        "quarters": rows, "totals": {n: box_str(n, totals[n]) for n in range(1, 10)}, "net": totals[5],
+        "sold": {"count": len(sold), "takings": sum((c["takings"] or ZERO for c in sold), ZERO),
+                 "profit": sum((c["profit"] or ZERO for c in sold), ZERO)},
+        "bought": {"count": len(bought), "spent": sum((c["bought_for"] or ZERO for c in bought), ZERO)},
+        "bank": {"money_in": sum((a for a in amounts if a > 0), ZERO),
+                 "money_out": sum((-a for a in amounts if a < 0), ZERO), "lines": len(amounts)},
+    }
+
+
+# ---------------------------------------------------------------- expenses
+
+# What each kind of cost is, with its usual VAT treatment (the line's category, so the VAT return
+# follows it). The VAT on any single line can still be changed by hand.
+EXPENSE_TYPES = {
+    "Prep and repairs": EXPENSE_VAT, "Parts": EXPENSE_VAT, "Valeting": EXPENSE_VAT,
+    "MOT": EXPENSE_NO_VAT,  # the MOT test fee itself has no VAT
+    "Transport and delivery": EXPENSE_VAT, "Auction fees": EXPENSE_VAT, "Advertising": EXPENSE_VAT,
+    "Fuel": EXPENSE_VAT, "Software and subscriptions": EXPENSE_VAT, "Phone and internet": EXPENSE_VAT,
+    "Rent and utilities": EXPENSE_VAT, "Insurance": EXPENSE_NO_VAT,  # insurance is exempt
+    "Bank charges": EXPENSE_NO_VAT, "Road tax and DVLA": EXPENSE_NO_VAT,
+    "Office and other": EXPENSE_VAT, "Other (no VAT)": EXPENSE_NO_VAT,
+}
+PAID_BY = ["Bank", "Cash", "Personal card"]
+_TYPE_HINTS = [("shell", "Fuel"), ("esso", "Fuel"), ("texaco", "Fuel"), ("bp ", "Fuel"),
+               ("autotrader", "Advertising"), ("auto trader", "Advertising"), ("insurance", "Insurance"),
+               ("dvla", "Road tax and DVLA"), ("valet", "Valeting"), ("mot", "MOT"), ("bca", "Auction fees"),
+               ("manheim", "Auction fees"), ("aston barclay", "Auction fees")]
+
+
+def guess_expense_type(description: str) -> str | None:
+    d = f" {(description or '').lower()} "
+    return next((t for k, t in _TYPE_HINTS if k in d), None)
+
+
+def set_expense_type(conn, txn_id: int, expense_type: str | None) -> None:
+    """Give a money-out line its kind of cost. The category (and so the VAT) follows the kind,
+    unless the VAT was typed by hand."""
+    t = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
+    if not t:
+        raise ValueError("Expense not found.")
+    if expense_type and expense_type not in EXPENSE_TYPES:
+        raise ValueError("Unknown expense type.")
+    if not expense_type:
+        with conn:
+            conn.execute("UPDATE transactions SET expense_type = NULL WHERE id = ?", (txn_id,))
+        return
+    cat = EXPENSE_TYPES[expense_type]
+    amount = dec(t["amount"])
+    vat = dec(t["vat"]) if t["vat_manual"] else default_vat(cat, amount)
+    with conn:
+        conn.execute("UPDATE transactions SET expense_type = ?, category = ?, vat = ? WHERE id = ?",
+                     (expense_type, cat, money_str(vat), txn_id))
+
+
+def add_expense(conn, d, description: str, amount, expense_type: str, paid_by: str = "Cash",
+                vat=None, car_id: int | None = None, notes: str = "", refund: bool = False) -> int:
+    """An expense not paid through Tide (cash or a personal card). It counts in the VAT return once,
+    by its own date; if the company later repays you from Tide, mark that repayment Exclude."""
+    if expense_type not in EXPENSE_TYPES:
+        raise ValueError("Pick the kind of expense.")
+    if paid_by not in PAID_BY or paid_by == "Bank":
+        raise ValueError("Bank payments come in through the Tide import; pick Cash or Personal card.")
+    gross = dec(amount)
+    if not gross or gross <= 0:
+        raise ValueError("Enter the amount paid.")
+    if not text(description):
+        raise ValueError("Enter what the expense was for.")
+    cat = EXPENSE_TYPES[expense_type]
+    # A refund is money back on a cost: it comes in, and its VAT reduces the VAT reclaimed.
+    sign = 1 if refund else -1
+    vat = None if vat in (None, "") else -sign * pence(dec(vat))
+    txn = add_transaction(conn, d, text(description), sign * gross, cat, vat)
+    with conn:
+        conn.execute("UPDATE transactions SET expense_type = ?, paid_by = ?, car_id = ?, notes = ? WHERE id = ?",
+                     (expense_type, paid_by, car_id, text(notes), txn))
+    return txn
+
+
+def delete_expense(conn, txn_id: int) -> None:
+    t = conn.execute("SELECT paid_by FROM transactions WHERE id = ?", (txn_id,)).fetchone()
+    if not t or not t["paid_by"] or t["paid_by"] == "Bank":
+        raise ValueError("Only expenses added by hand can be deleted; bank lines come from Tide.")
+    for r in list_receipts(conn, txn_id):
+        delete_receipt(conn, r["id"])
+    with conn:
+        conn.execute("DELETE FROM transactions WHERE id = ?", (txn_id,))
+
+
+def _expense_line(t: dict, regs: dict, vat_reg: date | None = None) -> dict:
+    gross = -dec(t["amount"])
+    before_reg = not vat_counts(vat_reg, to_date(t["date"]))
+    vat = dec(t["vat"]) if t["category"] == EXPENSE_VAT and not before_reg else ZERO
+    car = t["car_id"] if t["car_id"] in regs else None
+    return {
+        "id": t["id"], "date": to_date(t["date"]), "description": t["description"],
+        "gross": gross, "vat": vat, "net": gross - vat, "category": t["category"],
+        "expense_type": t.get("expense_type") or (None if t["category"] == UNCATEGORISED
+                                                 else guess_expense_type(t["description"])),
+        "type_set": bool(t.get("expense_type")), "car_id": car, "car_reg": regs.get(car),
+        "paid_by": t.get("paid_by") or "Bank", "receipts": t["receipts"], "notes": t["notes"] or "",
+        "needs_receipt": t["category"] == EXPENSE_VAT and vat > 0 and not t["receipts"],
+        "uncategorised": t["category"] == UNCATEGORISED, "vat_manual": bool(t["vat_manual"]),
+        "before_vat_reg": before_reg, "refund": gross < 0,
+    }
+
+
+def get_expense(conn, txn_id: int) -> dict:
+    """One cost, for its own page. Bank lines keep the Tide date, description and amount."""
+    t = conn.execute("SELECT t.*, (SELECT COUNT(*) FROM receipts r WHERE r.txn_id = t.id) AS receipts "
+                     "FROM transactions t WHERE t.id = ?", (txn_id,)).fetchone()
+    if not t or (dec(t["amount"]) >= 0 and t["category"] not in EXPENSE_CATEGORIES):
+        raise ValueError("Expense not found.")
+    regs = {r["id"]: r["reg"] for r in conn.execute("SELECT id, reg FROM cars")}
+    x = _expense_line(dict(t), regs, vat_reg_date(conn))
+    x["manual"] = x["paid_by"] != "Bank"
+    x["default_vat"] = default_vat(EXPENSE_TYPES.get(x["expense_type"], t["category"]), dec(t["amount"]))
+    return x
+
+
+def update_expense(conn, txn_id: int, data: dict) -> None:
+    """Save the expense page. Only keys present change. `vat` None restores the default for the type."""
+    x = get_expense(conn, txn_id)
+    cur = dict(conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone())
+    unlocked = bool(data.get("unlocked"))  # the expense page's Unlock: fix a Tide line by hand
+    if not x["manual"] and not unlocked and any(k in data for k in ("date", "description", "amount", "paid_by")):
+        changed = (("date" in data and iso(data["date"]) != cur["date"])
+                   or ("description" in data and text(data["description"]) != cur["description"])
+                   or ("amount" in data and dec(data["amount"]) != abs(dec(cur["amount"])))
+                   or ("paid_by" in data and data["paid_by"] != "Bank"))
+        if changed:
+            raise ValueError("The date, description and amount of a bank line come from Tide and can't be changed.")
+    if not x["manual"] and "paid_by" in data and data["paid_by"] != "Bank":
+        raise ValueError("A Tide line was paid from the bank.")
+    fields = {}
+    if x["manual"] or unlocked:
+        if "description" in data:
+            if not text(data["description"]):
+                raise ValueError("Enter what the expense was for.")
+            fields["description"] = text(data["description"])
+        if "date" in data:
+            if not iso(data["date"]):
+                raise ValueError("Enter the date paid.")
+            fields["date"] = iso(data["date"])
+        if "amount" in data:
+            gross = dec(data["amount"])
+            if not gross or gross <= 0:
+                raise ValueError("Enter the amount paid.")
+            fields["amount"] = money_str(gross if x["refund"] else -gross)
+        if "paid_by" in data and x["manual"]:
+            if data["paid_by"] not in PAID_BY or data["paid_by"] == "Bank":
+                raise ValueError("Pick Cash or Personal card.")
+            fields["paid_by"] = data["paid_by"]
+    etype = data.get("expense_type", cur["expense_type"]) or None
+    if etype and etype not in EXPENSE_TYPES:
+        raise ValueError("Unknown expense type.")
+    if "expense_type" in data:
+        fields["expense_type"] = etype
+    cat = EXPENSE_TYPES[etype] if etype else cur["category"]
+    fields["category"] = cat
+    amount = dec(fields.get("amount", cur["amount"]))
+    if "vat" in data:
+        if data["vat"] in (None, ""):
+            fields["vat"], fields["vat_manual"] = money_str(default_vat(cat, amount)), 0
+        else:
+            v = pence(dec(data["vat"]))
+            if v < 0 or v > abs(amount):
+                raise ValueError("VAT can't be more than the amount paid.")
+            fields["vat"], fields["vat_manual"] = money_str(-v if amount > 0 else v), 1
+    elif not cur["vat_manual"]:
+        fields["vat"] = money_str(default_vat(cat, amount))
+    if "notes" in data:
+        fields["notes"] = text(data["notes"])
+    if "car_id" in data:
+        car = int(data["car_id"]) if data["car_id"] else None
+        if car and not conn.execute("SELECT 1 FROM cars WHERE id = ?", (car,)).fetchone():
+            raise ValueError("Car not found.")
+        fields["car_id"] = car
+    with conn:
+        conn.execute(f"UPDATE transactions SET {', '.join(f'{k} = ?' for k in fields)} WHERE id = ?",
+                     (*fields.values(), txn_id))
+
+
+def expenses(conn, period) -> dict:
+    """Every cost in the period: money out in an expense category (or not categorised yet), and
+    refunds (money back in an expense category), which count against the costs."""
+    regs = {r["id"]: r["reg"] for r in conn.execute("SELECT id, reg FROM cars")}
+    vat_reg = vat_reg_date(conn)
+    lines = []
+    for t in _txn_rows(conn, period):
+        amount = dec(t["amount"])
+        if t["category"] not in (EXPENSE_VAT, EXPENSE_NO_VAT, UNCATEGORISED):
+            continue
+        if amount >= 0 and t["category"] == UNCATEGORISED:  # money in not yet sorted isn't a refund
+            continue
+        lines.append(_expense_line(t, regs, vat_reg))
+    by_type: dict[str, dict] = {}
+    for x in lines:
+        if x["uncategorised"]:
+            continue
+        b = by_type.setdefault(x["expense_type"] or "Not typed yet", {"gross": ZERO, "vat": ZERO, "count": 0})
+        b["gross"] += x["gross"]
+        b["vat"] += x["vat"]
+        b["count"] += 1
+    done = [x for x in lines if not x["uncategorised"]]
+    return {
+        "lines": sorted(lines, key=lambda x: (x["date"], x["id"]), reverse=True),
+        "by_type": [{"type": k, **v} for k, v in sorted(by_type.items(), key=lambda kv: -kv[1]["gross"])],
+        "totals": {"gross": sum((x["gross"] for x in done), ZERO), "vat": sum((x["vat"] for x in done), ZERO),
+                   "net": sum((x["net"] for x in done), ZERO),
+                   "cars": sum((x["gross"] for x in done if x["car_id"]), ZERO),
+                   "general": sum((x["gross"] for x in done if not x["car_id"]), ZERO),
+                   "missing_receipts": sum(x["needs_receipt"] for x in lines),
+                   "refunds": sum((-x["gross"] for x in done if x["refund"]), ZERO),
+                   "uncategorised": sum(x["uncategorised"] for x in lines)},
+    }

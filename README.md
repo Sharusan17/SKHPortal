@@ -8,6 +8,9 @@ A two-service monorepo:
 - **`frontend/`** — the customer-facing site, built with **Next.js** (App Router + TypeScript).
 - **`backend/`** — an **Express + TypeScript** API that owns the application database
   (standalone **PostgreSQL** on Railway, viewed in pgAdmin) via **Prisma**.
+- **`admin/`** — the private back office at **`/admin`** (accounts, invoices, credit notes,
+  expenses, bank, MTD VAT return): Python **FastAPI** + SQLite on a Railway volume, React page,
+  behind an admin sign-in. The website forwards `/admin/...` to it. See [`admin/README.md`](admin/README.md).
 
 **Supabase** handles authentication (added in a later phase). Both services deploy on
 **Railway**. See [`ROADMAP.md`](ROADMAP.md) for the full plan.
@@ -45,6 +48,7 @@ frontend/            Next.js app (the customer site)
   app/               App Router routes (portal, prestige, stock, car pages)
   components/        shared UI (Star, SiteFooter, PrestigeNav, CarCard, …)
   lib/               data + helpers (cars.ts)
+admin/               back office at /admin (FastAPI + React), see admin/README.md
 backend/             Express + TypeScript API
   src/               server (index.ts), Prisma client (db.ts)
   prisma/            schema.prisma (Enquiry model)
