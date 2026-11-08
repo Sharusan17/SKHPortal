@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import StarMark from "@/components/StarMark";
+import Logo from "@/components/Logo";
 import MobileMenu from "@/components/MobileMenu";
 
 const LINKS: [string, string][] = [
@@ -26,11 +26,7 @@ export default function PrestigeNav() {
     <header className={"nav" + (scrolled ? " scrolled" : "")}>
       <div className="wrap nav-inner">
         <Link className="logo" href="/prestige" aria-label="SKH Prestige Motors">
-          <StarMark variant="cream" size={38} />
-          <span className="word">
-            <span className="top" style={{ color: "var(--cream)" }}>SKH</span>
-            <span className="sub" style={{ color: "var(--tx-dim)" }}>Prestige Motors</span>
-          </span>
+          <Logo />
         </Link>
         <nav className="nav-links">
           {LINKS.map(([t, href]) => (

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import Star from "./Star";
+import Logo from "./Logo";
 
 export default function SiteFooter() {
   const year = new Date().getFullYear();
@@ -8,12 +8,8 @@ export default function SiteFooter() {
       <div className="wrap">
         <div className="footer-grid">
           <div>
-            <Link className="logo" href="/" style={{ marginBottom: 18 }}>
-              <Star variant="silver" size={34} />
-              <span className="word">
-                <span className="top silver-text">SKH</span>
-                <span className="sub">Inc</span>
-              </span>
+            <Link className="logo" href="/" style={{ marginBottom: 18, display: "inline-block" }}>
+              <Logo />
             </Link>
             <p style={{ color: "var(--tx-soft)", maxWidth: "34ch", margin: "6px 0 18px" }}>
               Your car, sorted — under one roof. Seven specialist divisions, one trusted group.

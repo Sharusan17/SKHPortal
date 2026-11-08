@@ -1,0 +1,12 @@
+# Your data: never commit it
+*.db
+data/
+receipts/
+invoices/
+documents/
+backups/
+.env
+__pycache__/
+.pytest_cache/
+web/node_modules/
+web/dist/

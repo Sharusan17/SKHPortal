@@ -2,6 +2,7 @@ import Link from "next/link";
 import SiteFooter from "@/components/SiteFooter";
 import HubEffects from "@/components/HubEffects";
 import Star, { type StarVariant } from "@/components/Star";
+import Logo from "@/components/Logo";
 import MobileMenu from "@/components/MobileMenu";
 import "./hub.css";
 
@@ -92,11 +93,7 @@ export default function Home() {
       <header className="nav hero-nav" id="nav">
         <div className="wrap nav-inner">
           <Link className="logo" href="/" aria-label="SKH Inc home">
-            <Star variant="silver" size={36} className="star-svg" />
-            <span className="word">
-              <span className="top silver-text">SKH</span>
-              <span className="sub">Inc</span>
-            </span>
+            <Logo />
           </Link>
           <div className="nav-links">
             <Link href="/prestige">Prestige Motors</Link>
