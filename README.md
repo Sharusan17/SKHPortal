@@ -9,7 +9,7 @@ A monorepo of three apps, each deployed as its own Railway service:
 |-----|-----------|-------|-----------|
 | [`apps/web`](apps/web) | The public website: group portal, Prestige showroom, stock and car pages | Next.js (App Router, TypeScript) | http://localhost:3000 |
 | [`apps/api`](apps/api) | The website's API: vehicles, enquiries, £99 reservations | Express + TypeScript, Prisma, PostgreSQL | http://localhost:3001 |
-| [`apps/admin`](apps/admin) | The private back office at **`/admin`**: stock book, invoices, credit notes, expenses, bank, MTD VAT return | FastAPI (Python) + SQLite on a volume, React (Vite), admin sign-in | http://localhost:8501/admin |
+| [`apps/admin`](apps/admin) | The private back office at **`/admin`**: stock book, invoices, credit notes, expenses, bank, MTD VAT return | FastAPI (Python) + the shared PostgreSQL (own `admin` schema), React (Vite), admin sign-in | http://localhost:8501/admin |
 
 The website forwards every `/admin/...` request to the admin service (`ADMIN_URL`), so the whole
 platform lives on one domain. **Supabase** will handle customer sign-in in a later phase; see the
@@ -67,12 +67,13 @@ cd apps/api && npm run build
 
 ## Deployment (Railway)
 
-One Railway project, one service per app, plus PostgreSQL:
+One Railway project, one service per app, plus one PostgreSQL shared by the API (`public` schema)
+and the admin (`admin` schema):
 
 | Service | Root directory | Watch paths | Notes |
 |---------|----------------|-------------|-------|
 | web | `apps/web` | `apps/web/**` | `NEXT_PUBLIC_API_URL`, `ADMIN_URL` (admin's private URL) |
 | api | `apps/api` | `apps/api/**` | Dockerfile; `DATABASE_URL` from Postgres, `CORS_ORIGIN` |
-| admin | `apps/admin` | `apps/admin/**` | Dockerfile; volume at `/data`; sign-in variables; no public domain |
+| admin | `apps/admin` | `apps/admin/**` | Dockerfile; `DATABASE_URL` from Postgres, `PORT=8080`, sign-in variables; no volume, no public domain |
 
 Watch paths mean a change only redeploys the app it touches.
