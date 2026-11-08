@@ -935,7 +935,7 @@ def build_app(db_path: str | None = None) -> FastAPI:
     @root.get("/admin", include_in_schema=False)
     def admin_home():
         if not (DIST / "index.html").exists():
-            bad("The web page isn't built: run npm run build in admin/web.", 404)
+            bad("The web page isn't built: run npm run build in apps/admin/web.", 404)
         return FileResponse(DIST / "index.html")
 
     return root

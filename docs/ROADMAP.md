@@ -111,28 +111,21 @@ Prestige division — ready to share.
 - **Security:** Supabase Row-Level Security, server-side validation, secrets in env
 - **Maintainability:** typed, small focused components, documented decisions
 
-## 6. Repository structure (target)
+## 6. Repository structure
+
+A monorepo with one folder per deployed app (see the root [README](../README.md) for details):
 
 ```
 SKHPortal/
-├─ docs/                     # roadmap + per-phase specs (this folder)
-│  ├─ ROADMAP.md
-│  └─ specs/
-├─ src/
-│  ├─ app/                   # Next.js App Router routes
-│  │  ├─ page.tsx            # main portal
-│  │  ├─ prestige/           # SKH Prestige division
-│  │  ├─ servicing/          # (later)
-│  │  ├─ detailing/          # (later)
-│  │  └─ fine-line/          # (later)
-│  ├─ components/            # reusable UI
-│  ├─ lib/                   # db client, supabase-auth client, helpers
-│  ├─ db/                    # Prisma client instance + query helpers
-│  └─ styles/
-├─ prisma/                   # schema.prisma + migrations (applied to app Postgres)
-├─ public/                   # static assets
-└─ .env                      # DATABASE_URL + secrets (gitignored)
+├─ apps/
+│  ├─ web/      # Next.js site (portal, Prestige, stock, divisions)
+│  ├─ api/      # Express + Prisma API over the app Postgres
+│  └─ admin/    # back office at /admin (accounts, invoices, VAT)
+├─ docs/        # this roadmap, per-phase specs, design handoff and prototypes
+└─ .github/     # CI on every pull request
 ```
+
+Each app keeps its own `.env` (from its `.env.example`); secrets are never committed.
 
 ## 7. Open questions to resolve before/within Phase 1
 - Branding: logo, exact brand colors, fonts — do you have these, or should I

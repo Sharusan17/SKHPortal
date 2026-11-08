@@ -1,4 +1,4 @@
-# SKHPortal backend — Express + Prisma
+# SKHPortal API (apps/api) — Express + Prisma
 FROM node:20-bookworm-slim
 
 # Prisma needs OpenSSL at build and runtime.

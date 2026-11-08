@@ -1,4 +1,4 @@
-// The admin dashboard (accounts, VAT, invoices) is its own service in admin/. The website
+// The admin dashboard (accounts, VAT, invoices) is its own service in apps/admin. The website
 // forwards everything under /admin to it, so it lives at yoursite.com/admin.
 // ADMIN_URL: the admin service's address (Railway private URL in production).
 const ADMIN_URL = (process.env.ADMIN_URL || "http://127.0.0.1:8501").replace(/\/+$/, "");

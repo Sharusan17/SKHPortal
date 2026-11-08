@@ -1,57 +1,81 @@
 # SKHPortal
 
-The web platform for **SKH Inc** — a Lancashire automotive group with seven specialist
-divisions: Prestige Motors, Finance, Detailing, Mechanic, Rental, Recovery and Custom.
+The web platform for **SKH Inc**, a Lancashire automotive group with seven specialist divisions:
+Prestige Motors, Finance, Detailing, Mechanic, Rental, Recovery and Custom.
 
-A two-service monorepo:
+A monorepo of three apps, each deployed as its own Railway service:
 
-- **`frontend/`** — the customer-facing site, built with **Next.js** (App Router + TypeScript).
-- **`backend/`** — an **Express + TypeScript** API that owns the application database
-  (standalone **PostgreSQL** on Railway, viewed in pgAdmin) via **Prisma**.
-- **`admin/`** — the private back office at **`/admin`** (accounts, invoices, credit notes,
-  expenses, bank, MTD VAT return): Python **FastAPI** + SQLite on a Railway volume, React page,
-  behind an admin sign-in. The website forwards `/admin/...` to it. See [`admin/README.md`](admin/README.md).
+| App | What it is | Stack | Local URL |
+|-----|-----------|-------|-----------|
+| [`apps/web`](apps/web) | The public website: group portal, Prestige showroom, stock and car pages | Next.js (App Router, TypeScript) | http://localhost:3000 |
+| [`apps/api`](apps/api) | The website's API: vehicles, enquiries, £99 reservations | Express + TypeScript, Prisma, PostgreSQL | http://localhost:3001 |
+| [`apps/admin`](apps/admin) | The private back office at **`/admin`**: stock book, invoices, credit notes, expenses, bank, MTD VAT return | FastAPI (Python) + SQLite on a volume, React (Vite), admin sign-in | http://localhost:8501/admin |
 
-**Supabase** handles authentication (added in a later phase). Both services deploy on
-**Railway**. See [`ROADMAP.md`](ROADMAP.md) for the full plan.
+The website forwards every `/admin/...` request to the admin service (`ADMIN_URL`), so the whole
+platform lives on one domain. **Supabase** will handle customer sign-in in a later phase; see the
+[roadmap](docs/ROADMAP.md).
 
-## Status — Phase 1
+## Repository layout
 
-Live foundation: the SKH Inc group portal and the **SKH Prestige Motors** showroom,
-recreating the approved design prototypes in [`project/`](project).
-
-| Route (frontend) | Page |
-|------------------|------|
-| `/` | SKH Inc group portal (hero, seven-division grid, closing CTA) |
-| `/prestige` | Prestige Motors home (search, featured cars, finance example) |
-| `/prestige/stock` | Inventory — searchable/filterable car grid |
-| `/prestige/stock/[slug]` | Individual car page (specs, reserve/enquire) |
-
-The car data is still static (`frontend/lib/cars.ts`); Phase 2 moves it to the backend
-Postgres. Enquiry forms currently behave as in the prototype; the backend
-`POST /api/enquiries` endpoint is scaffolded and goes live once the database is wired.
+```
+apps/
+  web/        Next.js site
+    app/          routes: /, /prestige, /prestige/stock, /prestige/stock/[slug], /divisions/[slug]
+    components/   shared UI (Star, SiteFooter, PrestigeNav, CarCard, ...)
+    lib/          API client, car and division data/helpers
+    public/       logos and static assets
+  api/        Express API
+    src/          server (index.ts), routes/, Prisma client (db.ts)
+    prisma/       schema.prisma, migrations/, seed.ts
+  admin/      Back office (see apps/admin/README.md)
+    api/          FastAPI server and accounting logic
+    web/          React pages
+    tests/        pytest suite (VAT rules, invoices, sign-in)
+docs/
+  ROADMAP.md      product roadmap and phases
+  specs/          per-phase design specs
+  design/         design handoff note and the original HTML prototypes (source of truth for visuals)
+.github/workflows/ci.yml   checks every pull request
+```
 
 ## Getting started
 
+Each app has its own `.env` (copied from its `.env.example`); there is no shared env file, so each
+service only ever sees its own secrets.
+
 ```bash
-# Frontend
-cd frontend && npm install && cp .env.example .env && npm run dev   # http://localhost:3000
+# Website
+cd apps/web && npm install && cp .env.example .env && npm run dev        # http://localhost:3000
 
-# Backend (separate terminal)
-cd backend && npm install && cp .env.example .env && npm run dev    # http://localhost:3001
+# API (separate terminal)
+cd apps/api && npm install && cp .env.example .env && npm run dev        # http://localhost:3001
+
+# Admin (separate terminal) - see apps/admin/README.md for the sign-in settings
+cd apps/admin && pip install -r requirements.txt && cp .env.example .env
+cd web && npm install && npm run build && cd .. && python api/server.py   # http://localhost:8501/admin
 ```
 
-## Project layout
+With all three running, the admin is also at http://localhost:3000/admin.
 
+## Checks
+
+Every pull request runs [CI](.github/workflows/ci.yml): the admin test suite, and a production
+build of the website, the API and the admin pages. Locally:
+
+```bash
+cd apps/admin && python -m pytest -q
+cd apps/web && npm run build
+cd apps/api && npm run build
 ```
-frontend/            Next.js app (the customer site)
-  app/               App Router routes (portal, prestige, stock, car pages)
-  components/        shared UI (Star, SiteFooter, PrestigeNav, CarCard, …)
-  lib/               data + helpers (cars.ts)
-admin/               back office at /admin (FastAPI + React), see admin/README.md
-backend/             Express + TypeScript API
-  src/               server (index.ts), Prisma client (db.ts)
-  prisma/            schema.prisma (Enquiry model)
-docs/                roadmap specs and the original design handoff note
-project/             design prototypes (source of truth for the visuals)
-```
+
+## Deployment (Railway)
+
+One Railway project, one service per app, plus PostgreSQL:
+
+| Service | Root directory | Watch paths | Notes |
+|---------|----------------|-------------|-------|
+| web | `apps/web` | `apps/web/**` | `NEXT_PUBLIC_API_URL`, `ADMIN_URL` (admin's private URL) |
+| api | `apps/api` | `apps/api/**` | Dockerfile; `DATABASE_URL` from Postgres, `CORS_ORIGIN` |
+| admin | `apps/admin` | `apps/admin/**` | Dockerfile; volume at `/data`; sign-in variables; no public domain |
+
+Watch paths mean a change only redeploys the app it touches.
