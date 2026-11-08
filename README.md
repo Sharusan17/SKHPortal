@@ -35,7 +35,6 @@ docs/
   ROADMAP.md      product roadmap and phases
   specs/          per-phase design specs
   design/         design handoff note and the original HTML prototypes (source of truth for visuals)
-.github/workflows/ci.yml   checks every pull request
 ```
 
 ## Getting started
@@ -59,8 +58,7 @@ With all three running, the admin is also at http://localhost:3000/admin.
 
 ## Checks
 
-Every pull request runs [CI](.github/workflows/ci.yml): the admin test suite, and a production
-build of the website, the API and the admin pages. Locally:
+Before opening a pull request, run the admin tests and build each app:
 
 ```bash
 cd apps/admin && python -m pytest -q

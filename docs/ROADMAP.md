@@ -121,8 +121,7 @@ SKHPortal/
 │  ├─ web/      # Next.js site (portal, Prestige, stock, divisions)
 │  ├─ api/      # Express + Prisma API over the app Postgres
 │  └─ admin/    # back office at /admin (accounts, invoices, VAT)
-├─ docs/        # this roadmap, per-phase specs, design handoff and prototypes
-└─ .github/     # CI on every pull request
+└─ docs/        # this roadmap, per-phase specs, design handoff and prototypes
 ```
 
 Each app keeps its own `.env` (from its `.env.example`); secrets are never committed.
