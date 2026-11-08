@@ -1,0 +1,11 @@
+# Store text with LF line endings everywhere (Windows checkouts keep working; no more CRLF warnings).
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.pdf binary
+*.ttf binary
+*.woff binary
+*.woff2 binary

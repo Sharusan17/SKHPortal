@@ -1,8 +1,0 @@
-web/node_modules
-web/dist
-data
-tests
-**/__pycache__
-.pytest_cache
-.env
-*.db

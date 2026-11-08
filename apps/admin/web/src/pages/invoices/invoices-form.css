@@ -1,0 +1,66 @@
+/* Local styles for the invoice page (InvoicesPage.jsx). Colours come from the shared tokens in styles.css. */
+
+.fit-err { border-color: var(--red) !important; background: var(--red-bg) !important; }
+.req-warn { border-color: var(--orange) !important; background: var(--orange-bg) !important; }
+
+
+.sub-head { font-size: 13px; font-weight: 500; color: var(--text-2); }
+
+.trade-hint {
+  font-size: 12px; line-height: 1.45; color: var(--text-2);
+  background: #FFFFFF; border-radius: var(--radius-sm); padding: 8px 10px;
+}
+
+.check-row { display: flex; align-items: center; gap: 8px; font-size: 13px; white-space: nowrap; cursor: pointer; }
+.check-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--ink); margin: 0; }
+.check-row:has(input:disabled) { color: var(--muted); cursor: default; }
+
+.ro-box {
+  background: #FFFFFF; border-radius: var(--radius-sm); padding: 8px 10px;
+  font-size: 13px; line-height: 1.45; color: var(--text-2); min-height: 40px;
+}
+
+.kv-row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; padding: 4px 0; }
+.kv-row span:first-child { color: var(--muted); }
+
+.split-cols { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.split-even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.cols-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 800px) {
+  .split-cols, .split-even, .cols-3 { grid-template-columns: minmax(0, 1fr); }
+}
+
+.summary-panel { background: #FFFFFF; border-radius: var(--radius-sm); padding: 14px 16px; }
+.summary-panel .kv-row { font-size: 14px; }
+.summary-balance {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  border-top: 1px solid var(--border); margin-top: 8px; padding-top: 10px;
+  font-size: 18px; font-weight: 600;
+}
+
+.pay-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+@media (max-width: 800px) { .pay-form { grid-template-columns: minmax(0, 1fr); } }
+
+.link-btn {
+  background: none; border: 0; padding: 4px 0; font: inherit; font-weight: 500;
+  color: var(--ink); cursor: pointer;
+}
+.link-btn:disabled { color: var(--muted); cursor: default; }
+
+.line-list { display: flex; flex-direction: column; gap: 8px; }
+.item-err { color: var(--red); font-size: 12px; margin-top: 4px; }
+.disclose-head {
+  background: none; border: 0; padding: 6px 0; font: inherit; font-weight: 500;
+  color: var(--text-2); cursor: pointer; display: flex; align-items: center; gap: 6px;
+}
+.disclose-head svg { transition: transform .15s; }
+.disclose-head.open svg { transform: rotate(180deg); }
+
+/* Row actions in the invoice list wrap onto a second line rather than overflowing. */
+.inv-actions { display: flex; flex-wrap: wrap; gap: 2px; min-width: 260px; }
+
+.action-bar {
+  position: sticky; bottom: 0; z-index: 5; background: var(--bg);
+  padding: 10px 0; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+}
+.action-bar .summary { margin-left: auto; font-size: 14px; color: var(--text-2); }

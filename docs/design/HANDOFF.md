@@ -1,7 +1,7 @@
 # Design handoff note (original)
 
 > Preserved from the Claude Design (claude.ai/design) handoff bundle that seeded this
-> repository. The HTML/CSS/JS prototypes referenced below live in [`project/`](../../project).
+> repository. The HTML/CSS/JS prototypes referenced below live in [`prototypes/`](prototypes).
 > They are the source of truth for the visual design that the Next.js app recreates.
 
 This is a **handoff bundle** from Claude Design (claude.ai/design).
@@ -10,7 +10,7 @@ A user mocked up designs in HTML/CSS/JS using an AI design tool, then exported t
 
 ## What you should do — IMPORTANT
 
-**Read `project/prestige.html` in full.** The user had this file open when they triggered the handoff, so it's almost certainly the primary design they want built. Read it top to bottom — don't skim. Then **follow its imports**: open every file it pulls in (shared components, CSS, scripts) so you understand how the pieces fit together before you start implementing.
+**Read `prototypes/prestige.html` in full.** The user had this file open when they triggered the handoff, so it's almost certainly the primary design they want built. Read it top to bottom — don't skim. Then **follow its imports**: open every file it pulls in (shared components, CSS, scripts) so you understand how the pieces fit together before you start implementing.
 
 **If anything is ambiguous, ask the user to confirm before you start implementing.** It's much cheaper to clarify scope up front than to build the wrong thing.
 
@@ -20,4 +20,4 @@ The design medium is **HTML/CSS/JS** — these are prototypes, not production co
 
 ## Bundle contents
 
-- `project/` — the `SKH Inc` project files (HTML prototypes, assets, components)
+- `prototypes/` — the `SKH Inc` project files (HTML prototypes, assets, components)
