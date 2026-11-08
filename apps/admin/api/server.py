@@ -309,14 +309,17 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         return FileResponse(invoice_pdf.DEFAULT_LOGO, headers={"Cache-Control": "no-store"})
 
     @app.post("/api/logo")
-    def upload_logo(file: UploadFile = File(...)):
+    def upload_logo(file: UploadFile = File(...), conn=Depends(db)):
         try:
             img = Image.open(io.BytesIO(file.file.read()))
             img.load()
         except Exception:  # anything PIL can't read
             bad("That file isn't an image. Upload a PNG or JPG logo.")
-        invoice_pdf.DEFAULT_LOGO.parent.mkdir(parents=True, exist_ok=True)
-        core.fit_logo(img).save(invoice_pdf.DEFAULT_LOGO, format="PNG")
+        logo = invoice_pdf.DEFAULT_LOGO
+        logo.parent.mkdir(parents=True, exist_ok=True)
+        core.fit_logo(img).save(logo, format="PNG")
+        if logo.resolve().is_relative_to(conn.files_dir.resolve()):  # keep it in the database too
+            core.store_file(conn, logo)
         return {"message": "Logo saved. Re-generate any existing invoices to use it."}
 
     @app.get("/api/vrn-check")
