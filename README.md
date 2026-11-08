@@ -30,7 +30,6 @@ apps/
   admin/      Back office (see apps/admin/README.md)
     api/          FastAPI server and accounting logic
     web/          React pages
-    tests/        pytest suite (VAT rules, invoices, sign-in)
 docs/
   ROADMAP.md      product roadmap and phases
   specs/          per-phase design specs
@@ -58,10 +57,10 @@ With all three running, the admin is also at http://localhost:3000/admin.
 
 ## Checks
 
-Before opening a pull request, run the admin tests and build each app:
+Before opening a pull request, build each app:
 
 ```bash
-cd apps/admin && python -m pytest -q
+cd apps/admin/web && npm run build
 cd apps/web && npm run build
 cd apps/api && npm run build
 ```

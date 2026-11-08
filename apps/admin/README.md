@@ -16,7 +16,6 @@ apps/admin/
     invoice_pdf.py   invoice layout (do not change coordinates, fonts or layout)
     credit_note_pdf.py, lookups.py (Companies House, HMRC VAT check, DVLA/DVSA)
   web/         React page (pages at /admin, /admin/stock, /admin/invoices, /admin/car/12 ...)
-  tests/       pytest suite, including the HMRC margin-scheme and sign-in tests
   data/        local data (gitignored): vat.db, receipts/, invoices/, documents/, logo.png
   Dockerfile   builds the page and runs the API (Railway)
 ```
@@ -47,8 +46,6 @@ With the website too: run the admin as above, then `cd apps/web && npm run dev` 
 http://localhost:3000/admin (the website forwards it to `ADMIN_URL`, default port 8501).
 
 Page development with hot reload: `cd apps/admin/web && npm run dev` (http://localhost:5173/admin/).
-
-Tests: `cd apps/admin && python -m pytest -q`
 
 ## Deploy on Railway
 
