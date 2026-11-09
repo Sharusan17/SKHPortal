@@ -841,6 +841,15 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
             bad(str(e))
         return Response(png, media_type="image/png", headers={"Cache-Control": "no-store"})
 
+    @app.post("/api/invoices/draft.pdf")
+    def invoice_draft_pdf(body: dict, conn=Depends(db)):
+        try:
+            pdf = core.draft_pdf(conn, body, editing(conn, body))
+        except ValueError as e:
+            bad(str(e))
+        return Response(pdf, media_type="application/pdf",
+                        headers={"Cache-Control": "no-store", "Content-Disposition": 'inline; filename="draft.pdf"'})
+
     @app.get("/api/invoices/{invoice_id}")
     def get_invoice(invoice_id: int, conn=Depends(db)):
         return invoice_out(conn, invoice_or_404(conn, invoice_id))
