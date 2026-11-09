@@ -92,7 +92,6 @@ export default function HomePage() {
   const { business, version, period } = useApp();
   const home = useLoad(() => api.get("/admin/api/home", { p: period.id }), [version, period.id]);
   const d = home.data;
-  const businessName = business?.trading_name || business?.company_name || business?.name || "";
 
   if (!d) {
     if (home.error) {
@@ -126,7 +125,8 @@ export default function HomePage() {
   const receiptsAttached = progress.receipts_attached || 0;
   const warnings = progress.warnings || 0;
   const next = d.next_to_file;
-  const name = d.salesperson || businessName;
+  const name = (business?.owner_name || "").trim();  // never the company name
+  const todayLong = new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
   // The next return to send: the latest ended quarter if it isn't filed yet, else this quarter's.
   const submit = next
@@ -142,7 +142,7 @@ export default function HomePage() {
         <div className="page-head">
           <div>
             <h1>{`${greeting()}${name ? `, ${name}` : ""}`}</h1>
-            {quarter.label && <p className="muted">{`${quarter.label} · quarter in progress`}</p>}
+            <p className="muted">{todayLong}</p>
           </div>
           <div className="page-actions">
             {QUICK.map((q) => (

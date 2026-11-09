@@ -65,6 +65,7 @@ class BusinessIn(BaseModel):
     invoice_start: int | None = None
     stock_start: int | None = None
     year_end: str = ""
+    owner_name: str = ""  # who uses the admin: the Home page greets them by name
 
 
 class CarIn(BaseModel):
