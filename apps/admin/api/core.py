@@ -164,7 +164,7 @@ _MIGRATIONS = [
                                     "buyer_fee_vat", "purchase_paid_on", "asking_price", "notes")),
     *(("cars", f, "TEXT") for f in ("fuel_type", "engine_cc", "tax_due", "mot_expiry", "mileage_history",
                                     "checked_at")),
-    ("business", "year_end", "TEXT"),
+    ("business", "year_end", "TEXT"), ("business", "owner_name", "TEXT"),
     ("transactions", "expense_type", "TEXT"), ("transactions", "paid_by", "TEXT"),
 ]
 
@@ -189,7 +189,7 @@ STARTER_RULES = [
 BUSINESS_FIELDS = ["company_number", "company_name", "company_status", "registered_office",
                    "sic_codes", "incorporation_date", "directors", "vrn", "trading_name", "email",
                    "phone", "stagger", "vat_reg_date", "accounting_scheme", "uses_margin_scheme",
-                   "sort_code", "account_no", "invoice_start", "stock_start", "year_end"]
+                   "sort_code", "account_no", "invoice_start", "stock_start", "year_end", "owner_name"]
 
 
 # ---------------------------------------------------------------- value helpers

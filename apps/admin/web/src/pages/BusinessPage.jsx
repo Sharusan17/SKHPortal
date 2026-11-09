@@ -12,7 +12,7 @@ import {
 const EMPTY = {
   company_number: "", company_name: "", company_status: "", registered_office: "", sic_codes: "",
   incorporation_date: "", directors: "", vrn: "", stagger: "MAR", vat_reg_date: "",
-  accounting_scheme: "", uses_margin_scheme: true, trading_name: "", email: "", phone: "",
+  accounting_scheme: "", uses_margin_scheme: true, trading_name: "", owner_name: "", email: "", phone: "",
   sort_code: "", account_no: "", invoice_start: "", stock_start: "", year_end: "",
 };
 
@@ -285,6 +285,7 @@ export function BusinessForm({ onSaved }) {
 
       <Card title={<SectionTitle n={3} icon={Contact}>Contact</SectionTitle>} className="tone-sky">
         <div className="grid-3">
+          <Field variant="line" label="Your name" hint="Home greets you with it"><Input value={form.owner_name} onChange={setText("owner_name")} placeholder="e.g. Sharusan" /></Field>
           <Field variant="line" label="Trading name (optional)"><Input value={form.trading_name} onChange={setText("trading_name")} /></Field>
           <Field variant="line" label="Contact email"><Input type="email" value={form.email} onChange={setText("email")} /></Field>
           <Field variant="line" label="Phone"><Input type="tel" value={form.phone} onChange={setText("phone")} /></Field>
