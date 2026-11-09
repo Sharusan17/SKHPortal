@@ -1855,9 +1855,9 @@ def invoice_png(conn, invoice_id: int, resolution: int = PREVIEW_DPI) -> bytes:
     return _pdf_png(path, resolution)
 
 
-def draft_png(conn, data: dict, current: dict | None = None, resolution: int = PREVIEW_DPI) -> bytes:
-    """Page 1 of an unsaved invoice exactly as it would print, marked DRAFT. Nothing is saved and
-    no invoice number is used; missing details just print blank."""
+def draft_pdf(conn, data: dict, current: dict | None = None) -> bytes:
+    """An unsaved invoice exactly as it would print, marked DRAFT. Nothing is saved and no invoice
+    number is used; missing details just print blank."""
     import invoice_pdf
 
     row, _ = _invoice_input(conn, data, current)
@@ -1868,6 +1868,14 @@ def draft_png(conn, data: dict, current: dict | None = None, resolution: int = P
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "draft.pdf"
         invoice_pdf.build_invoice(invoice_document(conn, inv), out)
+        return out.read_bytes()
+
+
+def draft_png(conn, data: dict, current: dict | None = None, resolution: int = PREVIEW_DPI) -> bytes:
+    """Page 1 of the draft as an image (the fallback where a browser can't show PDFs)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "draft.pdf"
+        out.write_bytes(draft_pdf(conn, data, current))
         return _pdf_png(out, resolution)
 
 

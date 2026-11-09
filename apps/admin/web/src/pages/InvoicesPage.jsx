@@ -57,6 +57,9 @@ const VEH_MORE = [
 ];
 const VEHICLE_KEYS = [...VEH_MAIN.flat(), ...VEH_MORE].map((v) => v.key).filter((k) => k !== "reg");
 
+// Browsers that can show a PDF inline get the real PDF as the preview; others get an image.
+const SHOW_PDF = typeof navigator !== "undefined" && navigator.pdfViewerEnabled !== false;
+
 const PAY_METHODS = ["Bank transfer", "Card", "Cash", "Finance company", "Other"];
 const PAY_BADGE = {
   paid: { tone: "green", text: "Paid" },
@@ -224,7 +227,8 @@ export default function InvoicesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftJson, hasCar]);
 
-  // Draft PNG of page 1, for Preview mode.
+  // Draft for Preview mode: the real PDF where the browser can show one (sharp at any zoom,
+  // printable), else an image of page 1.
   useEffect(() => {
     if (view !== "preview" || !hasCar) return undefined;
     let live = true;
@@ -232,7 +236,7 @@ export default function InvoicesPage() {
     setPreviewBusy(true);
     const t = setTimeout(async () => {
       try {
-        const res = await fetch("/admin/api/invoices/draft.png", {
+        const res = await fetch(`/admin/api/invoices/draft.${SHOW_PDF ? "pdf" : "png"}`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: draftJson, signal: ctrl.signal,
         });
         if (!res.ok) {
@@ -786,9 +790,15 @@ export default function InvoicesPage() {
         ) : (
           <div style={{ position: "relative", width: "100%", minHeight: 300 }}>
             {previewUrl && (
-              <img src={previewUrl} alt="Draft of page 1"
-                style={{ display: "block", width: "100%", maxWidth: 900, margin: "0 auto", background: "#fff",
-                  border: "1px solid var(--border)", boxShadow: "var(--shadow-lg)" }} />
+              SHOW_PDF ? (
+                <iframe title="Draft invoice" src={`${previewUrl}#view=FitH&toolbar=0&navpanes=0`}
+                  style={{ display: "block", width: "100%", maxWidth: 900, height: "min(1270px, 85vh)", margin: "0 auto",
+                    background: "#fff", border: "1px solid var(--border)", boxShadow: "var(--shadow-lg)" }} />
+              ) : (
+                <img src={previewUrl} alt="Draft of page 1"
+                  style={{ display: "block", width: "100%", maxWidth: 900, margin: "0 auto", background: "#fff",
+                    border: "1px solid var(--border)", boxShadow: "var(--shadow-lg)" }} />
+              )
             )}
             {previewBusy && (
               <div className="sh-overlay" style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(255,255,255,.55)" }}>
@@ -1004,11 +1014,19 @@ export default function InvoicesPage() {
               {shown.failed ? (
                 <p className="small muted">Preview not available. Use Re-generate PDF in the list below.</p>
               ) : (
-                // The real PDF, so text and lines stay sharp at any zoom.
+                // The real PDF, so text and lines stay sharp at any zoom (an image where PDFs can't show).
+                SHOW_PDF ? (
                 <iframe key={shown.v} title={`Invoice ${shown.invoice_no}`}
                   src={`/admin/api/invoices/${shown.id}/pdf?v=${shown.v}#view=FitH&toolbar=0&navpanes=0`}
                   style={{ display: "block", width: "100%", maxWidth: 900, height: "min(1270px, 85vh)", background: "#fff",
                     border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxShadow: "var(--shadow-lg)" }} />
+                ) : (
+                  <img key={shown.v} src={`/admin/api/invoices/${shown.id}/preview.png?v=${shown.v}`}
+                    alt={`Page 1 of invoice ${shown.invoice_no}`}
+                    onError={() => setShown((s) => (s ? { ...s, failed: true } : s))}
+                    style={{ display: "block", width: "100%", maxWidth: 900, background: "#fff",
+                      border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxShadow: "var(--shadow-lg)" }} />
+                )
               )}
             </div>
           </Card>
