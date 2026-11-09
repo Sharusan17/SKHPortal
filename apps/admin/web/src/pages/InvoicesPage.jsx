@@ -1004,10 +1004,10 @@ export default function InvoicesPage() {
               {shown.failed ? (
                 <p className="small muted">Preview not available. Use Re-generate PDF in the list below.</p>
               ) : (
-                <img key={shown.v} src={`/admin/api/invoices/${shown.id}/preview.png?v=${shown.v}`}
-                  alt={`Page 1 of invoice ${shown.invoice_no}`}
-                  onError={() => setShown((s) => (s ? { ...s, failed: true } : s))}
-                  style={{ display: "block", width: "100%", maxWidth: 620, background: "#fff",
+                // The real PDF, so text and lines stay sharp at any zoom.
+                <iframe key={shown.v} title={`Invoice ${shown.invoice_no}`}
+                  src={`/admin/api/invoices/${shown.id}/pdf?v=${shown.v}#view=FitH&toolbar=0&navpanes=0`}
+                  style={{ display: "block", width: "100%", maxWidth: 900, height: "min(1270px, 85vh)", background: "#fff",
                     border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", boxShadow: "var(--shadow-lg)" }} />
               )}
             </div>

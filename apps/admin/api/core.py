@@ -1832,17 +1832,22 @@ def void_invoice(conn, invoice_id: int) -> dict:
     return get_invoice(conn, invoice_id)
 
 
+# Previews are drawn at 220 dpi: an A4 page is about 1820 px wide, so it stays sharp on
+# high-resolution (2x) screens at the width the page shows it.
+PREVIEW_DPI = 220
+
+
 def _pdf_png(path: Path, resolution: int) -> bytes:
     import pdfplumber
 
     with pdfplumber.open(path) as pdf:
         img = pdf.pages[0].to_image(resolution=resolution).original
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 
-def invoice_png(conn, invoice_id: int, resolution: int = 110) -> bytes:
+def invoice_png(conn, invoice_id: int, resolution: int = PREVIEW_DPI) -> bytes:
     inv = get_invoice(conn, invoice_id)
     path = invoice_path(conn, inv) if inv else None
     if not path or not path.exists():
@@ -1850,7 +1855,7 @@ def invoice_png(conn, invoice_id: int, resolution: int = 110) -> bytes:
     return _pdf_png(path, resolution)
 
 
-def draft_png(conn, data: dict, current: dict | None = None, resolution: int = 110) -> bytes:
+def draft_png(conn, data: dict, current: dict | None = None, resolution: int = PREVIEW_DPI) -> bytes:
     """Page 1 of an unsaved invoice exactly as it would print, marked DRAFT. Nothing is saved and
     no invoice number is used; missing details just print blank."""
     import invoice_pdf
