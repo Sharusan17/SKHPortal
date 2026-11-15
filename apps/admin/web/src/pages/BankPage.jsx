@@ -5,7 +5,7 @@ import {
   Trash2, Undo2, Upload, X, Zap,
 } from "lucide-react";
 import {
-  Alert, Badge, Button, Card, Collapsible, Field, Input, PageHeader, Progress, Select, StatCard, Tabs, Toggle,
+  Alert, Badge, Button, Card, Collapsible, Field, Input, MoneyInput, PageHeader, Progress, Select, StatCard, Tabs, Toggle,
   useAction, useLoad, useToast,
 } from "../components/ui.jsx";
 import { useApp } from "../context.js";
@@ -13,8 +13,7 @@ import { api } from "../api.js";
 import { money, plural, shortCategory, ukDate } from "../format.js";
 
 const ROLES = [
-  ["date", "Date"], ["description", "Description"], ["paid_in", "Paid in"],
-  ["paid_out", "Paid out"], ["amount", "Signed amount"],
+  ["date", "Date"], ["description", "Description"], ["paid_in", "Paid in"], ["paid_out", "Paid out"],
 ];
 const EMPTY_MAP = Object.fromEntries(ROLES.map(([role]) => [role, null]));
 
@@ -305,43 +304,70 @@ function ImportTab({ refresh }) {
   const [run, busy] = useAction();
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
+  const [rows, setRows] = useState([]); // the lines to import, as edited on screen
   const [mapping, setMapping] = useState(EMPTY_MAP);
   const [failed, setFailed] = useState(null); // { id, rows } from the last import
   const [dropKey, setDropKey] = useState(0);
   const [account, setAccount] = useState("Tide");
+  const nextId = useRef(1);
 
-  const chooseFile = async (f) => {
+  const withIds = (list) => list.map((r) => ({ ...r, id: nextId.current++ }));
+
+  // Read the file (again, after the account or a column changes) into rows to check.
+  const load = async (f, opts = {}) => {
     if (!f) return;
     const fd = new FormData();
     fd.append("file", f);
-    const res = await run(() => api.post("/admin/api/import/preview", fd));
+    if (opts.mapping) fd.append("mapping", JSON.stringify(opts.mapping));
+    if (opts.account) fd.append("account", opts.account);
+    const res = await run(() => api.post("/admin/api/import/preview", fd), { quiet: true });
     if (!res) {
-      setFile(null);
-      setPreview(null);
-      setDropKey((k) => k + 1);
+      if (!opts.mapping && !opts.account) reset();
       return;
     }
     setFile(f);
     setPreview(res);
+    setRows(withIds(res.rows));
     setMapping({ ...EMPTY_MAP, ...res.guess });
     setAccount(res.account || "Tide");
   };
 
-  const ready = !!(mapping.date && (mapping.amount || mapping.paid_in || mapping.paid_out));
-  const colOptions = [{ value: "", label: "(not used)" }, ...(preview ? preview.columns : []).map((c) => ({ value: c, label: c }))];
-
-  const doImport = async () => {
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("mapping", JSON.stringify(Object.fromEntries(ROLES.map(([r]) => [r, mapping[r] || null]))));
-    fd.append("account", account);
-    const res = await run(() => api.post("/admin/api/import", fd));
-    if (!res) return;
-    setFailed(res.failed && res.failed.length ? { id: Date.now(), rows: res.failed } : null);
+  const reset = () => {
     setFile(null);
     setPreview(null);
+    setRows([]);
     setMapping(EMPTY_MAP);
     setDropKey((k) => k + 1);
+  };
+
+  const edits = rows.some((r) => !r.key) || (preview && rows.length !== preview.rows.length);
+  const reload = (opts) => {
+    if (edits && !window.confirm("Re-reading the file loses the rows you've added or removed. Carry on?")) return;
+    load(file, { mapping, account, ...opts });
+  };
+  const pickColumn = (role, v) => {
+    const next = { ...mapping, [role]: v || null };
+    setMapping(next);
+    reload({ mapping: next });
+  };
+
+  const setRow = (id, k) => (v) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, [k]: v } : r)));
+  const removeRow = (id) => setRows((rs) => rs.filter((r) => r.id !== id));
+  const addRow = () => setRows((rs) => [...rs, ...withIds([{
+    key: "", date: rs.length ? rs[rs.length - 1].date : "", description: "", paid_in: "", paid_out: "",
+  }])]);
+
+  const bad = (r) => !r.date || !(Number(r.paid_in) || Number(r.paid_out));
+  const problems = rows.filter(bad).length;
+  const sum = (k) => rows.reduce((s, r) => s + (Number(r[k]) || 0), 0);
+
+  const doImport = async () => {
+    const res = await run(() => api.post("/admin/api/import", {
+      account, rows: rows.map(({ key, date, description, paid_in, paid_out }) => ({ key, date, description, paid_in, paid_out })),
+    }));
+    if (!res) return;
+    setFailed(res.failed && res.failed.length ? { id: Date.now(), rows: res.failed } : null);
+    reset();
     refresh();
   };
 
@@ -349,11 +375,8 @@ function ImportTab({ refresh }) {
     <div className="stack">
       {failed && (
         <Collapsible key={failed.id} tone="warning" defaultOpen
-          title={<><AlertTriangle size={16} />{`${plural(failed.rows.length, "row")} in the last import couldn't be read and were skipped`}</>}>
+          title={<><AlertTriangle size={16} />{`${plural(failed.rows.length, "row")} in the last import had no date or amount and were left out`}</>}>
           <div className="stack-sm">
-            <p className="muted small">
-              Usually totals, balances or blank lines, which is fine. Check any that look like real transactions.
-            </p>
             <ul className="plain">
               {failed.rows.map((f, i) => <li key={i}>{f}</li>)}
             </ul>
@@ -366,7 +389,7 @@ function ImportTab({ refresh }) {
 
       <Card title="Import a bank statement" icon={Upload} className="tone-lilac">
         <div className="stack">
-          <Dropzone key={dropKey} accept=".csv,.pdf" disabled={busy} onFiles={(fs) => chooseFile(fs[0])}>
+          <Dropzone key={dropKey} accept=".csv,.pdf" disabled={busy} onFiles={(fs) => load(fs[0])}>
             <strong>Drop a Tide CSV or a Barclays statement PDF here, or click to choose one</strong>
             <span className="small">
               PDFs are read page by page: only the transaction lines are taken, so balances, the summary
@@ -378,48 +401,105 @@ function ImportTab({ refresh }) {
             <>
               <div style={{ width: 220, maxWidth: "100%" }}>
                 <Field label="Bank account">
-                  <Select value={account} onChange={setAccount}
+                  <Select value={account} onChange={(v) => { setAccount(v); reload({ account: v }); }}
                     options={(preview.accounts || ["Tide", "Barclays"]).map((a) => ({ value: a, label: a }))} />
                 </Field>
               </div>
-              <div>
-                <strong>Columns</strong>{" "}
-                <span className="muted small">(detected automatically, change if wrong)</span>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
-                {ROLES.map(([role, label]) => (
-                  <Field key={role} label={label}>
-                    <Select options={colOptions} value={mapping[role] ?? ""}
-                      onChange={(v) => setMapping((m) => ({ ...m, [role]: v || null }))} />
-                  </Field>
-                ))}
-              </div>
 
-              <div>
-                <span className="muted small">
-                  {file.name}. Showing the first {preview.preview.length} of {plural(preview.rows, "row")}.
-                </span>
+              {!preview.pdf && (
+                <Collapsible title="Columns in the CSV (picked automatically, change if wrong)">
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+                    {ROLES.map(([role, label]) => (
+                      <Field key={role} label={label}>
+                        <Select value={mapping[role] ?? ""} onChange={(v) => pickColumn(role, v)}
+                          options={[{ value: "", label: "(not used)" }, ...preview.columns.map((c) => ({ value: c, label: c }))]} />
+                      </Field>
+                    ))}
+                  </div>
+                </Collapsible>
+              )}
+
+              {preview.failed.length > 0 && (
+                <Collapsible tone="warning"
+                  title={<><AlertTriangle size={16} />{`${plural(preview.failed.length, "line")} in the file had no date or amount`}</>}>
+                  <div className="stack-sm">
+                    <p className="muted small">
+                      Usually totals, balances or headings. If one is a real transaction, add it with Add a row.
+                    </p>
+                    <ul className="plain">{preview.failed.map((f, i) => <li key={i}>{f}</li>)}</ul>
+                  </div>
+                </Collapsible>
+              )}
+
+              <div className="muted small">
+                {file.name}: {plural(rows.length, "row")} to import. Check them, change anything that's wrong,
+                and add or remove rows before importing.
               </div>
               <div className="table-wrap">
-                <table className="table">
+                <table className="table import-edit">
                   <thead>
-                    <tr>{preview.columns.map((c) => <th key={c}>{c}</th>)}</tr>
+                    <tr>
+                      <th style={{ width: 160 }}>Date</th><th>Description</th>
+                      <th className="r" style={{ width: 150 }}>Paid out</th>
+                      <th className="r" style={{ width: 150 }}>Paid in</th><th style={{ width: 44 }} />
+                    </tr>
                   </thead>
                   <tbody>
-                    {preview.preview.map((row, i) => (
-                      <tr key={i}>{preview.columns.map((c) => <td key={c}>{row[c]}</td>)}</tr>
+                    {rows.length === 0 && (
+                      <tr><td colSpan={5} className="muted">No rows. Add one below.</td></tr>
+                    )}
+                    {rows.map((r) => (
+                      <tr key={r.id} className={bad(r) ? "row-problem" : ""}>
+                        <td>
+                          <Input type="date" aria-label="Date" value={r.date}
+                            onChange={(e) => setRow(r.id, "date")(e.target.value)} />
+                        </td>
+                        <td>
+                          <Input aria-label="Description" value={r.description}
+                            onChange={(e) => setRow(r.id, "description")(e.target.value)} />
+                        </td>
+                        <td><MoneyInput aria-label="Paid out" value={r.paid_out} onChange={setRow(r.id, "paid_out")} /></td>
+                        <td><MoneyInput aria-label="Paid in" value={r.paid_in} onChange={setRow(r.id, "paid_in")} /></td>
+                        <td>
+                          <button type="button" className="btn btn-ghost btn-sm" aria-label="Remove this row"
+                            onClick={() => removeRow(r.id)}><Trash2 size={15} /></button>
+                        </td>
+                      </tr>
                     ))}
                   </tbody>
+                  {rows.length > 0 && (
+                    <tfoot>
+                      <tr>
+                        <td colSpan={2}><strong>Total</strong></td>
+                        <td className="r"><strong>{money(sum("paid_out"))}</strong></td>
+                        <td className="r"><strong>{money(sum("paid_in"))}</strong></td>
+                        <td />
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
+              <style>{`
+                .import-edit td { vertical-align: middle; }
+                .import-edit .input { min-width: 0; }
+                .import-edit tr.row-problem td { background: rgba(220, 120, 40, .08); }
+              `}</style>
 
-              {!ready && (
-                <Alert tone="warning">Pick a date column and either paid in / paid out or a signed amount.</Alert>
+              {problems > 0 && (
+                <Alert tone="warning">
+                  {plural(problems, "row")} {problems === 1 ? "needs" : "need"} a date and a paid out or paid in
+                  amount. Fill it in or remove it.
+                </Alert>
               )}
-              <div className="row-end">
-                <Button variant="primary" icon={Download} busy={busy} disabled={!ready} onClick={doImport}>
-                  {`Import ${plural(preview.rows, "row")}`}
-                </Button>
+              <div className="row" style={{ justifyContent: "space-between" }}>
+                <Button icon={Plus} onClick={addRow}>Add a row</Button>
+                <div className="row" style={{ gap: 8 }}>
+                  <Button variant="ghost" icon={X} onClick={reset}>Cancel</Button>
+                  <Button variant="primary" icon={Download} busy={busy} disabled={!rows.length || problems > 0}
+                    onClick={doImport}>
+                    {`Import ${plural(rows.length, "row")}`}
+                  </Button>
+                </div>
               </div>
             </>
           )}

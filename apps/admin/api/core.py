@@ -746,49 +746,90 @@ class ImportResult:
     cars_matched: int = 0
 
 
-def import_transactions(conn, raw: pd.DataFrame, mapping: dict, account: str = "Tide") -> ImportResult:
-    """Import a bank CSV (read with dtype=str). Each row is keyed on the SHA1 of its raw values
-    plus how many identical rows came before it in the file, so re-importing the same or an
-    overlapping export is safe while genuine same-day duplicates are kept. Rows from an account
-    other than Tide also key on the account, so two banks' identical lines never clash."""
+def _check_account(account: str) -> None:
     if account not in BANK_ACCOUNTS:
         raise ValueError(f"Pick the bank account: {', '.join(BANK_ACCOUNTS)}.")
+
+
+def statement_rows(raw: pd.DataFrame, mapping: dict, account: str = "Tide") -> tuple[list[dict], list[str]]:
+    """Turn a read statement (dtype=str) into rows to check before importing: date (ISO),
+    description, paid_in and paid_out (both positive, "" when none). Also returns the lines that
+    couldn't be read.
+
+    Each row carries `key`: the SHA1 of its raw values plus how many identical rows came before it
+    in the file, so re-importing the same or an overlapping statement is safe while genuine
+    same-day duplicates are kept. Rows from an account other than Tide also key on the account, so
+    two banks' identical lines never clash. (Same keys as every import before this one.)"""
+    _check_account(account)
+    rows: list[dict] = []
+    failed: list[str] = []
+    seen: dict[str, int] = {}
+    for i, row in enumerate(raw.to_dict("records"), start=1):
+        raw_key = "\x1f".join(text(row[c]) for c in raw.columns)
+        if account != BANK_ACCOUNTS[0]:
+            raw_key = f"{account}\x1d{raw_key}"
+        n = seen.get(raw_key, 0)
+        seen[raw_key] = n + 1
+        try:
+            d = to_date(row.get(mapping.get("date")) if mapping.get("date") else None)
+            if d is None:
+                raise ValueError("no date")
+            paid_in = dec(row.get(mapping["paid_in"])) if mapping.get("paid_in") else None
+            paid_out = dec(row.get(mapping["paid_out"])) if mapping.get("paid_out") else None
+            if paid_in is None and paid_out is None and mapping.get("amount"):
+                signed = dec(row.get(mapping["amount"]))  # a bank that gives one +/- column
+                if signed is not None:
+                    paid_in, paid_out = (signed, None) if signed > 0 else (None, signed)
+            if paid_in is None and paid_out is None:
+                raise ValueError("no paid in or paid out")
+        except ValueError as e:
+            preview = " | ".join(text(v) for v in row.values() if text(v))[:80]
+            failed.append(f"Line {i} ({preview or 'blank'}): {e}")
+            continue
+        rows.append({
+            "key": hashlib.sha1(f"{raw_key}\x1e{n}".encode()).hexdigest(),
+            "date": d.isoformat(),
+            "description": text(row.get(mapping["description"])) if mapping.get("description") else "",
+            "paid_in": money_str(abs(paid_in)) if paid_in else "",
+            "paid_out": money_str(abs(paid_out)) if paid_out else "",
+        })
+    return rows, failed
+
+
+def import_rows(conn, rows: list[dict], account: str = "Tide") -> ImportResult:
+    """Import rows checked (and maybe edited, added or removed) on the import screen. A row read
+    from the file keeps the file's key, so it's still recognised on a re-import after an edit; a
+    row added by hand is keyed on what was typed."""
+    _check_account(account)
     result = ImportResult()
     rules = get_rules(conn)
     history = _category_history(conn)
     seen: dict[str, int] = {}
     with conn:
-        for i, row in enumerate(raw.to_dict("records"), start=1):
-            raw_key = "\x1f".join(text(row[c]) for c in raw.columns)
-            if account != BANK_ACCOUNTS[0]:
-                raw_key = f"{account}\x1d{raw_key}"
-            n = seen.get(raw_key, 0)
-            seen[raw_key] = n + 1
-            row_hash = hashlib.sha1(f"{raw_key}\x1e{n}".encode()).hexdigest()
+        for i, row in enumerate(rows, start=1):
+            description = text(row.get("description"))
             try:
-                d = to_date(row.get(mapping.get("date")) if mapping.get("date") else None)
+                d = to_date(row.get("date"))
                 if d is None:
                     raise ValueError("no date")
-                if mapping.get("amount"):
-                    amount = dec(row.get(mapping["amount"]))
-                    if amount is None:
-                        raise ValueError("no amount")
-                else:
-                    paid_in = dec(row.get(mapping["paid_in"])) if mapping.get("paid_in") else None
-                    paid_out = dec(row.get(mapping["paid_out"])) if mapping.get("paid_out") else None
-                    if paid_in is None and paid_out is None:
-                        raise ValueError("no amount")
-                    amount = abs(paid_in or ZERO) - abs(paid_out or ZERO)
+                paid_in, paid_out = dec(row.get("paid_in")), dec(row.get("paid_out"))
+                if not paid_in and not paid_out:
+                    raise ValueError("no paid in or paid out")
+                amount = abs(paid_in or ZERO) - abs(paid_out or ZERO)
             except ValueError as e:
-                preview = " | ".join(text(v) for v in row.values() if text(v))[:80]
-                result.failed.append(f"Row {i} ({preview or 'blank'}): {e}")
+                result.failed.append(f"Row {i} ({description or 'no description'}): {e}")
                 continue
-            description = text(row.get(mapping["description"])) if mapping.get("description") else ""
+            key = text(row.get("key"))
+            if not re.fullmatch(r"[0-9a-f]{40}", key):
+                typed = f"{account}\x1dmanual\x1f{d.isoformat()}\x1f{description}\x1f{money_str(amount)}"
+                n = seen.get(typed, 0)
+                seen[typed] = n + 1
+                key = hashlib.sha1(f"{typed}\x1e{n}".encode()).hexdigest()
             category = _guess_category(rules, history, description) or UNCATEGORISED
             cur = conn.execute(
                 "INSERT INTO transactions (row_hash, date, description, amount, category, vat, account) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (row_hash) DO NOTHING",
-                (row_hash, d.isoformat(), description, money_str(amount), category,
+                (key, d.isoformat(), description, money_str(amount), category,
                  money_str(default_vat(category, amount)), account))
             if cur.rowcount:
                 result.added += 1
@@ -796,6 +837,14 @@ def import_transactions(conn, raw: pd.DataFrame, mapping: dict, account: str = "
             else:
                 result.skipped += 1
     result.cars_matched = match_car_payments(conn)
+    return result
+
+
+def import_transactions(conn, raw: pd.DataFrame, mapping: dict, account: str = "Tide") -> ImportResult:
+    """Import a whole statement as read, without checking it on screen first."""
+    rows, failed = statement_rows(raw, mapping, account)
+    result = import_rows(conn, rows, account)
+    result.failed = failed + result.failed
     return result
 
 
