@@ -18,8 +18,8 @@ const TABS = [
   { id: "sale", label: "Sale" },
 ];
 const DOC_KINDS = ["Purchase invoice", "Auction bill", "Repair receipt", "Other"];
-const FEE_VAT_HINT = "No VAT on the fee (auctioneers' scheme) — it counts towards the margin. "
-  + "VAT shown — it's reclaimed in Box 4.";
+const FEE_VAT_HINT = "No VAT on the fee (auctioneers' scheme): it counts towards the margin. "
+  + "VAT shown: it's reclaimed in Box 4.";
 const ASSURED_HINT = "Assured charges are a cost of the car. Any VAT shown on them is reclaimed in Box 4.";
 const PURCHASE_KEYS = ["auction_house", "purchase_date", "scheme", "purchase_price", "purchase_vat",
   "buyer_fee", "buyer_fee_vat", "assured_charge", "assured_charge_vat", "purchase_invoice_no", "seller_name",
@@ -133,12 +133,16 @@ export default function CarPanel({ car, onClose, page = false }) {
         {tab === "purchase" && (
           <Card>
             <div className="stack">
+              {/* Two to a row: each amount sits beside its own VAT. */}
               <div className="grid-2">
                 <Field label="Auction house"><Input {...inp("auction_house")} /></Field>
+                <Field label="Bought from"><Input {...inp("seller_name")} /></Field>
                 <Field label="Purchase date"><Input type="date" {...inp("purchase_date")} /></Field>
                 <Field label="Scheme">
                   <Segmented ariaLabel="Scheme" options={schemes} value={form.scheme} onChange={put("scheme")} />
                 </Field>
+              </div>
+              <div className="grid-2">
                 <Field label="Purchase price">
                   <MoneyInput value={form.purchase_price} onChange={put("purchase_price")} />
                 </Field>
@@ -166,7 +170,6 @@ export default function CarPanel({ car, onClose, page = false }) {
               <p className="small muted" style={{ marginTop: -6 }}>{ASSURED_HINT}</p>
               <div className="grid-2">
                 <Field label="Purchase invoice no"><Input {...inp("purchase_invoice_no")} /></Field>
-                <Field label="Bought from"><Input {...inp("seller_name")} /></Field>
                 <Field label="Bill paid on"
                   hint={car.bill_paid && !car.purchase_paid_on
                     ? "Marked paid from a matching bank payment." : undefined}>
