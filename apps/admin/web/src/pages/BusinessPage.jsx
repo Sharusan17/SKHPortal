@@ -79,8 +79,8 @@ function LogoUpload({ hasLogo }) {
   }
   return (
     <div className="row" style={{ alignItems: "center" }}>
-      <div style={{ width: 150, height: 82, border: "1px solid var(--border)", borderRadius: 8, display: "grid",
-        placeItems: "center", background: "var(--surface)", overflow: "hidden" }}>
+      <div style={{ width: 240, maxWidth: "100%", aspectRatio: "96 / 52.5", border: "1px solid var(--border)",
+        borderRadius: 8, display: "grid", placeItems: "center", padding: 8, background: "#FFFFFF", overflow: "hidden" }}>
         {shown ? <img src={`/admin/api/logo?v=${version}`} alt="Invoice logo" style={{ maxWidth: "100%", maxHeight: "100%" }} />
           : <span className="muted small">No logo</span>}
       </div>
@@ -89,7 +89,10 @@ function LogoUpload({ hasLogo }) {
           <Upload size={16} /><span>{busy ? "Uploading..." : shown ? "Replace logo" : "Upload logo"}</span>
           <input type="file" accept="image/png,image/jpeg" hidden onChange={(e) => upload(e.target.files[0])} />
         </label>
-        <span className="field-hint">PNG or JPG, wider than tall. Printed top left, about 34 × 18 mm.</span>
+        <span className="field-hint">
+          PNG or JPG. A white background is made see-through, spare space is trimmed and small logos are
+          enlarged automatically. Printed top left of invoices, about 34 × 18 mm.
+        </span>
       </div>
     </div>
   );

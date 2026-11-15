@@ -1594,6 +1594,10 @@ _TOTAL_KEYS = {"sub_total", "total_price", "after_px", "net_price", "after_finan
 LOGO_BOX = (96.0, 52.5)  # invoice_pdf draws the logo stretched to exactly this size (points)
 
 
+LOGO_MARK = ("skh-logo", "tidy-v1")  # PNG text tag on a logo that has been through tidy_logo
+LOGO_WIDTH = 1200  # pixels across the logo box: sharp in print (about 900 dpi) and on screen
+
+
 def fit_logo(img):
     """Pad a logo with transparent space to the invoice's logo box shape, so it isn't stretched."""
     from PIL import Image
@@ -1605,6 +1609,97 @@ def fit_logo(img):
     out = Image.new("RGBA", canvas_size, (255, 255, 255, 0))
     out.paste(img, ((canvas_size[0] - w) // 2, (canvas_size[1] - h) // 2))
     return out
+
+
+def _clear_background(img):
+    """Make a plain light background transparent. Only background joined to the picture's edges is
+    cleared, so white inside the logo (lettering, highlights) stays. Edges are softened so the logo
+    sits cleanly on any colour."""
+    import numpy as np
+    from PIL import Image
+
+    a = np.asarray(img.convert("RGBA")).astype(np.float32)
+    rgb, alpha = a[..., :3], a[..., 3]
+    border = np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]])
+    if alpha.min() < 250 and np.concatenate([alpha[0], alpha[-1], alpha[:, 0], alpha[:, -1]]).mean() < 128:
+        return img.convert("RGBA")  # already has a transparent background
+    bg = np.median(border, axis=0)
+    if bg.min() < 200:  # the background isn't white or near it: leave the picture alone
+        return img.convert("RGBA")
+    dist = np.sqrt(((rgb - bg) ** 2).sum(axis=-1))
+    near = dist < 48
+    # Flood the background in from every edge, through near-background pixels only.
+    reach = np.zeros_like(near)
+    reach[0], reach[-1], reach[:, 0], reach[:, -1] = near[0], near[-1], near[:, 0], near[:, -1]
+    while True:
+        grown = reach.copy()
+        grown[1:] |= reach[:-1]
+        grown[:-1] |= reach[1:]
+        grown[:, 1:] |= reach[:, :-1]
+        grown[:, :-1] |= reach[:, 1:]
+        grown &= near
+        if (grown == reach).all():
+            break
+        reach = grown
+    # Soft edge: background pixels fade by how far they are from the background colour.
+    new_alpha = np.where(reach, np.clip((dist - 12) / 36, 0, 1) * 255, alpha)
+    keep = new_alpha / 255
+    # Take the background's tint back out of the faded edge pixels, so no white fringe is left.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        clean = np.where(keep[..., None] > 0, (rgb - bg * (1 - keep[..., None])) / keep[..., None], 0)
+    out = np.dstack([np.clip(clean, 0, 255), new_alpha]).astype(np.uint8)
+    return Image.fromarray(out, "RGBA")
+
+
+def tidy_logo(img):
+    """Make an uploaded logo look its best: clear a white background, trim the empty space round it,
+    enlarge a small picture smoothly and fit it to the invoice's logo box without stretching."""
+    from PIL import Image
+
+    img = img.convert("RGBA")
+    if max(img.size) > 2400:  # plenty for the logo box; keeps the background clean-up quick
+        img.thumbnail((2400, 2400), Image.LANCZOS)
+    img = _clear_background(img)
+    box = img.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+    if box:
+        img = img.crop(box)
+    w, h = img.size
+    ratio = LOGO_BOX[0] / LOGO_BOX[1]
+    target_h = LOGO_WIDTH / ratio
+    scale = min(LOGO_WIDTH * 0.98 / w, target_h * 0.96 / h)  # a hair of breathing room
+    if abs(scale - 1) > 0.01:
+        img = img.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
+    return fit_logo(img)
+
+
+def save_logo(img, path) -> None:
+    """Write a tidied logo as PNG, tagged so it isn't tidied twice."""
+    from PIL import PngImagePlugin
+
+    info = PngImagePlugin.PngInfo()
+    info.add_text(*LOGO_MARK)
+    img.save(path, format="PNG", pnginfo=info, optimize=True)
+
+
+def tidy_saved_logo(conn, path) -> bool:
+    """Tidy a logo uploaded before tidy_logo existed (once; it is tagged after). True if changed."""
+    from PIL import Image
+
+    path = Path(path)
+    if not path.exists():
+        return False
+    try:
+        with Image.open(path) as im:
+            if im.info.get(LOGO_MARK[0]) == LOGO_MARK[1]:
+                return False
+            im.load()
+            img = im.copy()
+    except Exception:  # unreadable: leave it for the user to replace
+        return False
+    save_logo(tidy_logo(img), path)
+    if path.resolve().is_relative_to(conn.files_dir.resolve()):
+        store_file(conn, path)
+    return True
 
 
 def _printable(ch: str) -> bool:

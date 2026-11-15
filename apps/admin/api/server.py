@@ -152,6 +152,7 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
     conn = core.connect(db_path)
     # The uploaded logo is business data, so it sits in the data folder with the database.
     invoice_pdf.DEFAULT_LOGO = core.receipts_dir(conn).parent / "logo.png"
+    core.tidy_saved_logo(conn, invoice_pdf.DEFAULT_LOGO)  # a logo from before the tidy-up, once
     lock = threading.Lock()  # one SQLite connection shared by FastAPI's worker threads
 
     # ---------------------------------------------------------------- sign in
@@ -319,10 +320,10 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
             bad("That file isn't an image. Upload a PNG or JPG logo.")
         logo = invoice_pdf.DEFAULT_LOGO
         logo.parent.mkdir(parents=True, exist_ok=True)
-        core.fit_logo(img).save(logo, format="PNG")
+        core.save_logo(core.tidy_logo(img), logo)
         if logo.resolve().is_relative_to(conn.files_dir.resolve()):  # keep it in the database too
             core.store_file(conn, logo)
-        return {"message": "Logo saved. Re-generate any existing invoices to use it."}
+        return {"message": "Logo saved and tidied. Re-generate any existing invoices to use it."}
 
     @app.get("/api/vrn-check")
     def vrn_check(vrn: str):

@@ -592,7 +592,7 @@ export default function InvoicesPage() {
               <Panel title="Invoice to" className="tone-lilac">
                 <div className="stack-sm">
                   <p className="trade-hint">
-                    Selling to another dealer or trade company? Pick or enter the company here — it's still a normal sale for VAT.
+                    Selling to another dealer or trade company? Pick or enter the company here. It's still a normal sale for VAT.
                   </p>
                   <datalist id="saved-buyers">
                     {savedBuyers.map((c) => <option key={c.name} value={c.name} />)}
@@ -620,8 +620,8 @@ export default function InvoicesPage() {
               <Panel title="Sales invoice" className="tone-sky">
                 <div className="stack-sm">
                   <div className="kv-row"><span>Invoice no</span><span>{invoiceNo}</span></div>
-                  <div className="kv-row"><span>Stock number</span><span>{car && car.stock_no ? String(car.stock_no) : "—"}</span></div>
-                  <div className="kv-row"><span>VAT number</span><span>{seller.vat_no || "—"}</span></div>
+                  <div className="kv-row"><span>Stock number</span><span>{car && car.stock_no ? String(car.stock_no) : "-"}</span></div>
+                  <div className="kv-row"><span>VAT number</span><span>{seller.vat_no || "-"}</span></div>
                   <Field variant="line" label="Invoice date" error={errOf("invoice_date")}>
                     <Input id="f-invoice_date" type="date" value={f.invoiceDate} className={cls("invoice_date")}
                       onChange={(e) => set({ invoiceDate: e.target.value })} />
@@ -774,7 +774,7 @@ export default function InvoicesPage() {
                     )}
                     <div className="summary-balance">
                       <span>Balance due</span>
-                      <span>{t.balance === undefined ? "—" : money(t.balance)}</span>
+                      <span>{t.balance === undefined ? "-" : money(t.balance)}</span>
                     </div>
                   </div>
                   {errOf("pricing.total") && <Alert tone="error">{errOf("pricing.total")}</Alert>}
@@ -822,7 +822,7 @@ export default function InvoicesPage() {
           </Button>
           {editing && <Button icon={X} onClick={cancelEdit}>Cancel</Button>}
           <span className="summary">
-            Balance {t.balance === undefined ? "—" : money(t.balance)} · {car ? car.reg : "No car chosen"}
+            Balance {t.balance === undefined ? "-" : money(t.balance)} · {car ? car.reg : "No car chosen"}
           </span>
         </div>
       </div>
@@ -950,9 +950,9 @@ export default function InvoicesPage() {
                         <tr key={p.id}>
                           <td>{ukDate(p.paid_on)}</td>
                           <td style={{ textAlign: "right" }}>{money(p.amount)}</td>
-                          <td>{p.method || "—"}</td>
-                          <td>{p.note || "—"}</td>
-                          <td>{p.txn_id || "—"}</td>
+                          <td>{p.method || "-"}</td>
+                          <td>{p.note || "-"}</td>
+                          <td>{p.txn_id || "-"}</td>
                           <td>
                             <IconButton icon={Trash2} label="Delete payment" disabled={busy}
                               onClick={() => deletePayment(p)} />
