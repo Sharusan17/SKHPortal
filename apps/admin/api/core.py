@@ -167,7 +167,9 @@ _MIGRATIONS = [
     ("business", "year_end", "TEXT"), ("business", "owner_name", "TEXT"),
     ("cars", "assured_charge", "TEXT"), ("cars", "assured_charge_vat", "TEXT"),
     ("transactions", "expense_type", "TEXT"), ("transactions", "paid_by", "TEXT"),
+    ("transactions", "account", "TEXT"),
 ]
+BANK_ACCOUNTS = ["Tide", "Barclays"]
 
 # A car's journey before it's sold; once sold its stage comes from the sale and invoice payments.
 CAR_STATUSES = {"bought": "Bought", "in_prep": "In prep", "for_sale": "For sale"}
@@ -286,6 +288,8 @@ def connect(url: str | None = None, schema: str | None = None, files_dir: str | 
         conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {kind}")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS cars_stock_no ON cars(stock_no)")
     with conn:
+        # Everything imported before Barclays statements came in was from Tide.
+        conn.execute("UPDATE transactions SET account = ? WHERE account IS NULL", (BANK_ACCOUNTS[0],))
         for old, new in _RETIRED_STATUSES.items():
             conn.execute("UPDATE cars SET status = ? WHERE status = ?", (new, old))
         for (car_id,) in conn.execute("SELECT id FROM cars WHERE stock_no IS NULL ORDER BY id").fetchall():
@@ -742,10 +746,13 @@ class ImportResult:
     cars_matched: int = 0
 
 
-def import_transactions(conn, raw: pd.DataFrame, mapping: dict) -> ImportResult:
+def import_transactions(conn, raw: pd.DataFrame, mapping: dict, account: str = "Tide") -> ImportResult:
     """Import a bank CSV (read with dtype=str). Each row is keyed on the SHA1 of its raw values
     plus how many identical rows came before it in the file, so re-importing the same or an
-    overlapping export is safe while genuine same-day duplicates are kept."""
+    overlapping export is safe while genuine same-day duplicates are kept. Rows from an account
+    other than Tide also key on the account, so two banks' identical lines never clash."""
+    if account not in BANK_ACCOUNTS:
+        raise ValueError(f"Pick the bank account: {', '.join(BANK_ACCOUNTS)}.")
     result = ImportResult()
     rules = get_rules(conn)
     history = _category_history(conn)
@@ -753,6 +760,8 @@ def import_transactions(conn, raw: pd.DataFrame, mapping: dict) -> ImportResult:
     with conn:
         for i, row in enumerate(raw.to_dict("records"), start=1):
             raw_key = "\x1f".join(text(row[c]) for c in raw.columns)
+            if account != BANK_ACCOUNTS[0]:
+                raw_key = f"{account}\x1d{raw_key}"
             n = seen.get(raw_key, 0)
             seen[raw_key] = n + 1
             row_hash = hashlib.sha1(f"{raw_key}\x1e{n}".encode()).hexdigest()
@@ -777,10 +786,10 @@ def import_transactions(conn, raw: pd.DataFrame, mapping: dict) -> ImportResult:
             description = text(row.get(mapping["description"])) if mapping.get("description") else ""
             category = _guess_category(rules, history, description) or UNCATEGORISED
             cur = conn.execute(
-                "INSERT INTO transactions (row_hash, date, description, amount, category, vat) "
-                "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (row_hash) DO NOTHING",
+                "INSERT INTO transactions (row_hash, date, description, amount, category, vat, account) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (row_hash) DO NOTHING",
                 (row_hash, d.isoformat(), description, money_str(amount), category,
-                 money_str(default_vat(category, amount))))
+                 money_str(default_vat(category, amount)), account))
             if cur.rowcount:
                 result.added += 1
                 result.categorised += category != UNCATEGORISED

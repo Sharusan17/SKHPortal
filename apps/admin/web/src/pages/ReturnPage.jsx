@@ -174,7 +174,7 @@ function QuarterPrep({ quarter, p, cars, warnings, version }) {
   const paid = invoiced.filter((c) => invoiceFor(c).payment?.status === "paid");
 
   const steps = [
-    { label: "Bank statement imported", done: p.total > 0 ? 1 : 0, total: 1, href: "/admin/bank", action: "Import CSV",
+    { label: "Bank statement imported", done: p.total > 0 ? 1 : 0, total: 1, href: "/admin/bank", action: "Import statement",
       sub: p.total ? `${plural(p.total, "transaction")} · ${money(p.money_in)} in, ${money(p.money_out)} out` : "No Tide lines for this quarter yet" },
     { label: "Transactions categorised", done: p.categorised, total: p.total, href: "/admin/bank", action: "Categorise",
       sub: `${p.categorised} of ${p.total}` },

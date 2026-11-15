@@ -22,7 +22,7 @@ const ACTION_ICON = { bill: Receipt, prep: Wrench, document: FileWarning, paymen
 const QUICK = [
   { label: "Add a car", icon: Car, tone: "sage", href: "/admin/stock" },
   { label: "Create Invoice", icon: FileText, tone: "blush", href: "/admin/invoices" },
-  { label: "Import bank CSV", icon: Upload, tone: "lilac", href: "/admin/bank" },
+  { label: "Import bank statement", icon: Upload, tone: "lilac", href: "/admin/bank" },
 ];
 
 const go = (route) => { navigate(route); };

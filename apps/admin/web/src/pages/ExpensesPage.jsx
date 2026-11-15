@@ -73,7 +73,7 @@ export default function ExpensesPage() {
             }))} value={filter} onChange={setFilter} ariaLabel="Filter expenses" />
           </div>
           <ExpenseTable lines={view} meta={meta} cars={cars} empty={lines.length === 0
-            ? `No costs in ${period.label}. Import a Tide CSV on the Bank page, or add a cash expense.`
+            ? `No costs in ${period.label}. Import a Tide CSV or Barclays PDF on the Bank page, or add a cash expense.`
             : "Nothing matches."} />
         </Card>
 
