@@ -57,8 +57,7 @@ export default function StockList({ cars, onOpen }) {
                 </td>
                 <td className="r">{money(c.bought_for ?? c.purchase_price)}</td>
                 <td className="r">
-                  {c.sale_price != null ? money(c.sale_price)
-                    : c.asking_price != null ? <span className="muted">asking {money(c.asking_price)}</span> : ""}
+                  {c.sale_price != null ? money(c.sale_price) : ""}
                 </td>
                 <td className="r" style={{ color: c.profit < 0 ? "var(--red)" : c.profit > 0 ? "var(--green)" : undefined }}>
                   {c.profit != null ? money(c.profit) : ""}

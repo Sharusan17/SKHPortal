@@ -32,10 +32,11 @@ export default function StockPage() {
 
   const all = stockLoad.data;
   const unsold = all.filter((c) => !c.sale_date);
-  const atCost = unsold.reduce((s, c) => s + (Number(c.bought_for ?? c.purchase_price) || 0), 0);
+  const atCost = unsold.reduce((s, c) => s + (Number(c.paid ?? c.purchase_price) || 0), 0);
   const inPeriod = (d) => !!d && d.slice(0, 10) >= period.start && d.slice(0, 10) <= period.end;
   const soldQ = all.filter((c) => inPeriod(c.sale_date));
   const profit = soldQ.reduce((s, c) => (c.profit == null ? s : s + Number(c.profit)), 0);
+  const takings = soldQ.reduce((s, c) => (c.takings == null ? s : s + Number(c.takings)), 0);
 
   const q = search.trim().toLowerCase();
   const shown = all.filter((c) => matchesSearch(c, q));
@@ -58,10 +59,11 @@ export default function StockPage() {
 
       <div className="grid-4">
         <StatCard tone="sage" icon={Car} label="In stock" value={unsold.length} sub="Unsold cars" />
-        <StatCard tone="sand" icon={Calculator} label="Stock at cost" value={money(atCost)} sub="Unsold, bought price" />
+        <StatCard tone="sand" icon={Calculator} label="Stock at cost · incl. VAT" value={money(atCost)}
+          sub="Unsold, what you paid incl. VAT and fees" />
         <StatCard tone="blush" icon={CheckCircle2} label={`Sold · ${period.label}`}
-          value={soldQ ? soldQ.length : <Spinner />} />
-        <StatCard tone="lilac" icon={Calculator} label="Profit" sub={`${period.label}, before VAT`}
+          value={soldQ ? soldQ.length : <Spinner />} sub={`${money(takings)} in sales, incl. VAT`} />
+        <StatCard tone="lilac" icon={Calculator} label="Profit · after VAT" sub={`${period.label}, after VAT paid to HMRC`}
           value={profit !== null ? money(profit) : <Spinner />} />
       </div>
 

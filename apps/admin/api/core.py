@@ -165,6 +165,7 @@ _MIGRATIONS = [
     *(("cars", f, "TEXT") for f in ("fuel_type", "engine_cc", "tax_due", "mot_expiry", "mileage_history",
                                     "checked_at")),
     ("business", "year_end", "TEXT"), ("business", "owner_name", "TEXT"),
+    ("cars", "assured_charge", "TEXT"), ("cars", "assured_charge_vat", "TEXT"),
     ("transactions", "expense_type", "TEXT"), ("transactions", "paid_by", "TEXT"),
 ]
 
@@ -174,7 +175,7 @@ _RETIRED_STATUSES = {"bill_paid": "bought", "reserved": "for_sale"}  # stages si
 CAR_STAGES = {**CAR_STATUSES, "sold": "Sold", "completed": "Paid in full"}
 # Fields the car panel can change one at a time (sale fields go through invoices or record_sale).
 CAR_DETAIL_FIELDS = ["reg", "make_model", "scheme", "purchase_date", "purchase_price", "purchase_vat",
-                     *CAR_MARGIN_FIELDS, "auction_house", "lot_no", "buyer_fee", "buyer_fee_vat",
+                     *CAR_MARGIN_FIELDS, "auction_house", "lot_no", "buyer_fee", "buyer_fee_vat", "assured_charge", "assured_charge_vat",
                      "purchase_paid_on", "asking_price", "notes", "status"]
 PREP_DAYS_WARN = 14  # cars in prep longer than this are flagged on Home
 
@@ -467,6 +468,7 @@ def filing_deadline(q: Quarter) -> date:
 CAR_COLUMNS = ["id", "stock_no", "reg", "make_model", "scheme", "purchase_date", "purchase_price",
                "purchase_vat", "sale_date", "sale_price", "px_allowance", "px_for", *CAR_MARGIN_FIELDS]
 _CAR_MONEY = ["purchase_price", "purchase_vat", "sale_price", "px_allowance", "buyer_fee", "buyer_fee_vat",
+              "assured_charge", "assured_charge_vat",
               "asking_price"]
 _CAR_DATES = ["purchase_date", "sale_date", "first_reg", "purchase_paid_on", "status_at", "tax_due",
               "mot_expiry"]
@@ -1104,6 +1106,10 @@ def calculate_return(conn, quarter: Quarter) -> VatReturn:
             if fee:
                 add(4, fee_vat, "car", c["id"], f"{reg} buyer's fee VAT")
                 add(7, fee - fee_vat, "car", c["id"], f"{reg} buyer's fee")
+            ac, ac_vat = c.get("assured_charge") or ZERO, c.get("assured_charge_vat") or ZERO
+            if ac:
+                add(4, ac_vat, "car", c["id"], f"{reg} Assured charges VAT")
+                add(7, ac - ac_vat, "car", c["id"], f"{reg} Assured charges")
 
         if sold:
             if c["purchase_date"] and c["sale_date"] < c["purchase_date"]:
@@ -1156,6 +1162,10 @@ def calculate_return(conn, quarter: Quarter) -> VatReturn:
             if fee_vat:
                 add(4, fee_vat, "car", c["id"], f"{reg_no} buyer's fee VAT (in stock at registration)")
                 add(7, fee - fee_vat, "car", c["id"], f"{reg_no} buyer's fee before registration")
+            ac, ac_vat = c.get("assured_charge") or ZERO, c.get("assured_charge_vat") or ZERO
+            if ac_vat:
+                add(4, ac_vat, "car", c["id"], f"{reg_no} Assured charges VAT (in stock at registration)")
+                add(7, ac - ac_vat, "car", c["id"], f"{reg_no} Assured charges before registration")
         # Services in the 6 months before: only if they're for sales made after registering,
         # which the app can't tell, so they're flagged rather than claimed.
         since = _month_index_to_date(vat_reg.year * 12 + vat_reg.month - 1 - PRE_REG_SERVICES_MONTHS)
@@ -2134,6 +2144,10 @@ def update_car(conn, car_id: int, fields: dict) -> dict:
     fee_vat = dec(sets["buyer_fee_vat"]) if "buyer_fee_vat" in sets else car.get("buyer_fee_vat")
     if fee_vat and (not fee or fee_vat > fee):
         raise ValueError("The buyer's fee VAT can't be more than the fee itself.")
+    ac = dec(sets["assured_charge"]) if "assured_charge" in sets else car.get("assured_charge")
+    ac_vat = dec(sets["assured_charge_vat"]) if "assured_charge_vat" in sets else car.get("assured_charge_vat")
+    if ac_vat and (not ac or ac_vat > ac):
+        raise ValueError("The Assured charges VAT can't be more than the charge itself.")
     if sets:
         with conn:
             conn.execute(f"UPDATE cars SET {', '.join(f'{k} = ?' for k in sets)} WHERE id = ?",
@@ -2204,6 +2218,22 @@ def delete_car_document(conn, doc_id: int) -> None:
             conn.execute("DELETE FROM car_documents WHERE id = ?", (doc_id,))
 
 
+def rename_car_document(conn, doc_id: int, name: str) -> dict:
+    """Change the name a document shows and downloads as. The file extension is kept."""
+    row = conn.execute("SELECT * FROM car_documents WHERE id = ?", (doc_id,)).fetchone()
+    if not row:
+        raise ValueError("Document not found.")
+    ext = Path(row["filename"]).suffix
+    new = re.sub(r'[/:*?"<>|]+', " ", text(name).replace(chr(92), " ")).strip()
+    if not new:
+        raise ValueError("Enter a name for the document.")
+    if ext and not new.lower().endswith(ext.lower()):
+        new += ext
+    with conn:
+        conn.execute("UPDATE car_documents SET filename = ? WHERE id = ?", (new[:120], doc_id))
+    return dict(conn.execute("SELECT * FROM car_documents WHERE id = ?", (doc_id,)).fetchone())
+
+
 def car_overview(conn, today: date | None = None) -> list[dict]:
     """Every car with its stage, money and paperwork worked out, for the stock board and Home."""
     today = today or date.today()
@@ -2222,8 +2252,9 @@ def car_overview(conn, today: date | None = None) -> list[dict]:
     for c in list_cars(conn):
         # VAT on the purchase is only reclaimed if the car was still held on the registration date.
         if c["sale_date"] and not vat_counts(reg, c["sale_date"]):
-            c = {**c, "purchase_vat": None, "buyer_fee_vat": None}
+            c = {**c, "purchase_vat": None, "buyer_fee_vat": None, "assured_charge_vat": None}
         fee, fee_vat = c.get("buyer_fee") or ZERO, c.get("buyer_fee_vat") or ZERO
+        ac, ac_vat = c.get("assured_charge") or ZERO, c.get("assured_charge_vat") or ZERO
         costs = car_costs(conn, c["id"])
         inv = invoices.get(c["id"])
         pay = payment_status(conn, inv) if inv else None
@@ -2234,11 +2265,13 @@ def car_overview(conn, today: date | None = None) -> list[dict]:
         bill_paid = bool(c.get("purchase_paid_on")) or c["id"] in paid_purchases or bool(c.get("px_for"))
         end = c["sale_date"] or today
         cost_net = sum((x["net"] for x in costs), ZERO)
-        # What the car cost: price (net of VAT on a Standard car) plus the buyer's fee net of any VAT.
-        bought_for = None
+        # What the car cost: price (net of VAT on a Standard car) plus the buyer's fee and Assured
+        # charges, each net of any VAT reclaimed. `paid` is what actually left the bank, VAT included.
+        bought_for = paid = None
         if c["purchase_price"] is not None:
             bought_for = (c["purchase_price"] - (c["purchase_vat"] or ZERO if c["scheme"] == STANDARD else ZERO)
-                          + fee - fee_vat)
+                          + fee - fee_vat + ac - ac_vat)
+            paid = c["purchase_price"] + fee + ac
         profit = vat_due = takings = None
         if c["sale_price"] is not None:
             margin_cost = (c["purchase_price"] + fee if c["scheme"] == MARGIN and fee and not fee_vat
@@ -2260,7 +2293,7 @@ def car_overview(conn, today: date | None = None) -> list[dict]:
             "days_in_stock": (end - c["purchase_date"]).days if c["purchase_date"] else None,
             "days_in_stage": (today - stage_since).days if stage_since and not c["sale_date"] else None,
             "costs": costs, "costs_net": cost_net, "bought_for": bought_for, "vat_due": vat_due,
-            "profit": profit, "takings": takings, "documents": docs.get(c["id"], 0),
+            "profit": profit, "takings": takings, "paid": paid, "documents": docs.get(c["id"], 0),
             "mileage_history": json.loads(c.get("mileage_history") or "[]"),
             "invoice": {"id": inv["id"], "invoice_no": inv["invoice_no"], **pay} if inv else None,
             "credit_notes": [{"credit_no": cn["credit_no"], "kind_label": cn["kind_label"], "amount": cn["amount"],
@@ -2353,6 +2386,7 @@ def home_summary(conn, today: date | None = None, period: "Period | None" = None
         "quarter": {"id": q.start, "label": q.label, "deadline": filing_deadline(q)},
         "vat_so_far": current.boxes[5], "output_vat": current.boxes[1], "input_vat": current.boxes[4],
         "stock": {"count": len(in_stock), "at_cost": sum((c["bought_for"] or ZERO for c in in_stock), ZERO),
+                  "paid": sum((c["paid"] or ZERO for c in in_stock), ZERO),
                   "by_stage": {s: sum(c["stage"] == s for c in in_stock) for s in CAR_STATUSES}},
         "sold": {"label": period.label if period else q.label,
                  "count": len(sold_q), "profit": sum((c["profit"] or ZERO for c in sold_q), ZERO),

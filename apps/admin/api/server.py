@@ -560,6 +560,14 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
             bad("Document not found.", 404)
         return FileResponse(path, filename=row["filename"], content_disposition_type="inline")
 
+    @app.patch("/api/documents/{doc_id}")
+    def rename_car_document(doc_id: int, body: dict, conn=Depends(db)):
+        try:
+            doc = core.rename_car_document(conn, doc_id, body.get("filename", ""))
+        except ValueError as e:
+            bad(str(e))
+        return {**doc, "message": f"Renamed to {doc['filename']}."}
+
     @app.delete("/api/documents/{doc_id}")
     def delete_car_document(doc_id: int, conn=Depends(db)):
         core.delete_car_document(conn, doc_id)

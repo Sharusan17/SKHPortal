@@ -298,12 +298,29 @@ export function Field({ label, hint, error, children, className = "", variant = 
 export const Input = (props) => <input className="input" {...props} />;
 export const Textarea = (props) => <textarea className="input" rows={3} {...props} />;
 
-export function MoneyInput({ value, onChange, ...rest }) {
+// Money always reads with pence (12 → 12.00): shown that way when not being typed in, and tidied on leaving the box.
+const asPounds = (v) => {
+  if (v === null || v === undefined || v === "") return "";
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(2) : String(v);
+};
+
+export function MoneyInput({ value, onChange, onFocus, onBlur, ...rest }) {
+  const [typing, setTyping] = useState(false);
   return (
     <div className="money-input">
       <span>£</span>
       <input className="input" type="number" min="0" step="0.01" inputMode="decimal"
-        value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? "" : e.target.value)} {...rest} />
+        value={typing ? (value ?? "") : asPounds(value)}
+        onChange={(e) => onChange(e.target.value === "" ? "" : e.target.value)}
+        onFocus={(e) => { setTyping(true); onFocus?.(e); }}
+        onBlur={(e) => {
+          setTyping(false);
+          const tidy = asPounds(e.target.value);
+          if (tidy !== String(value ?? "")) onChange(tidy);
+          onBlur?.(e);
+        }}
+        {...rest} />
     </div>
   );
 }
