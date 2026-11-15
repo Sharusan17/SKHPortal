@@ -701,27 +701,39 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
             bad(f"Couldn't read that CSV: {e}")
 
     @app.post("/api/import/preview")
-    def import_preview(file: UploadFile = File(...)):
+    def import_preview(file: UploadFile = File(...), mapping: str = Form(""), account: str = Form("")):
+        """Every line read from the statement, ready to check and edit before importing. `mapping`
+        (CSV columns) and `account` are optional: blank means detect them."""
         raw, pdf = read_statement(file)
-        return jsonable_encoder({
-            "columns": list(raw.columns), "guess": core.detect_columns(list(raw.columns)),
-            "rows": len(raw), "preview": raw.head(5).astype(str).to_dict("records"),
-            "pdf": pdf, "account": "Barclays" if pdf else "Tide", "accounts": core.BANK_ACCOUNTS})
-
-    @app.post("/api/import")
-    def import_csv(file: UploadFile = File(...), mapping: str = Form(...), account: str = Form("Tide"),
-                   conn=Depends(db)):
-        raw, _pdf = read_statement(file)
-        m = {k: (v or None) for k, v in json.loads(mapping).items()}
-        if not m.get("date") or not (m.get("amount") or m.get("paid_in") or m.get("paid_out")):
-            bad("Pick a date column and either paid in / paid out or a signed amount.")
+        guess = core.detect_columns(list(raw.columns))
+        if mapping:
+            picked = {k: (v or None) for k, v in json.loads(mapping).items()}
+            guess = {**guess, **picked}
+            if picked.get("paid_in") or picked.get("paid_out"):
+                guess["amount"] = None
+        account = account or ("Barclays" if pdf else "Tide")
         try:
-            res = core.import_transactions(conn, raw, m, account)
+            rows, failed = core.statement_rows(raw, guess, account)
         except ValueError as e:
             bad(str(e))
+        return jsonable_encoder({
+            "columns": list(raw.columns), "guess": guess, "rows": rows, "failed": failed,
+            "pdf": pdf, "account": account, "accounts": core.BANK_ACCOUNTS})
+
+    @app.post("/api/import")
+    def import_checked(body: dict, conn=Depends(db)):
+        """Import the rows as checked on screen: {account, rows: [{key?, date, description, paid_in, paid_out}]}."""
+        account, rows = body.get("account") or "Tide", body.get("rows") or []
+        if not rows:
+            bad("There are no rows to import.")
+        try:
+            res = core.import_rows(conn, rows, account)
+        except ValueError as e:
+            bad(str(e))
+        skipped = f", skipped {res.skipped} already imported" if res.skipped else ""
         return {"message": f"Added {plural(res.added, account + ' transaction')} ({res.categorised} categorised "
                            f"automatically, {plural(res.cars_matched, 'car payment')} matched to the "
-                           f"stock book), skipped {res.skipped} already imported.",
+                           f"stock book){skipped}.",
                 "failed": res.failed}
 
     # ---------------------------------------------------------------- receipts
