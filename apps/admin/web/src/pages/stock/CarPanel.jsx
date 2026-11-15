@@ -20,10 +20,13 @@ const TABS = [
 const DOC_KINDS = ["Purchase invoice", "Auction bill", "Repair receipt", "Other"];
 const FEE_VAT_HINT = "No VAT on the fee (auctioneers' scheme) — it counts towards the margin. "
   + "VAT shown — it's reclaimed in Box 4.";
-const PURCHASE_KEYS = ["auction_house", "lot_no", "purchase_date", "scheme", "purchase_price", "purchase_vat",
-  "buyer_fee", "buyer_fee_vat", "purchase_invoice_no", "seller_name", "purchase_paid_on"];
-const VEHICLE_KEYS = ["reg", "make_model", "colour", "first_reg", "mileage", "asking_price", "notes"];
-const NUMBER_KEYS = ["purchase_price", "purchase_vat", "buyer_fee", "buyer_fee_vat", "asking_price"];
+const ASSURED_HINT = "Assured charges are a cost of the car. Any VAT shown on them is reclaimed in Box 4.";
+const PURCHASE_KEYS = ["auction_house", "purchase_date", "scheme", "purchase_price", "purchase_vat",
+  "buyer_fee", "buyer_fee_vat", "assured_charge", "assured_charge_vat", "purchase_invoice_no", "seller_name",
+  "purchase_paid_on"];
+const VEHICLE_KEYS = ["reg", "make_model", "colour", "first_reg", "mileage", "notes"];
+const NUMBER_KEYS = ["purchase_price", "purchase_vat", "buyer_fee", "buyer_fee_vat", "assured_charge",
+  "assured_charge_vat"];
 const DATE_KEYS = ["purchase_date", "purchase_paid_on", "first_reg"];
 
 const str = (v) => (v === null || v === undefined ? "" : String(v));
@@ -32,11 +35,12 @@ function formFrom(c) {
   return {
     reg: str(c.reg), make_model: str(c.make_model), scheme: c.scheme || "Margin",
     purchase_date: dateOnly(c.purchase_date), purchase_price: str(c.purchase_price), purchase_vat: str(c.purchase_vat),
-    auction_house: str(c.auction_house), lot_no: str(c.lot_no), buyer_fee: str(c.buyer_fee),
-    buyer_fee_vat: str(c.buyer_fee_vat), purchase_invoice_no: str(c.purchase_invoice_no),
+    auction_house: str(c.auction_house), buyer_fee: str(c.buyer_fee),
+    buyer_fee_vat: str(c.buyer_fee_vat), assured_charge: str(c.assured_charge),
+    assured_charge_vat: str(c.assured_charge_vat), purchase_invoice_no: str(c.purchase_invoice_no),
     seller_name: str(c.seller_name), purchase_paid_on: dateOnly(c.purchase_paid_on),
     colour: str(c.colour), first_reg: dateOnly(c.first_reg), mileage: str(c.mileage),
-    asking_price: str(c.asking_price), notes: str(c.notes),
+    notes: str(c.notes),
   };
 }
 
@@ -131,7 +135,6 @@ export default function CarPanel({ car, onClose, page = false }) {
             <div className="stack">
               <div className="grid-2">
                 <Field label="Auction house"><Input {...inp("auction_house")} /></Field>
-                <Field label="Lot no"><Input {...inp("lot_no")} /></Field>
                 <Field label="Purchase date"><Input type="date" {...inp("purchase_date")} /></Field>
                 <Field label="Scheme">
                   <Segmented ariaLabel="Scheme" options={schemes} value={form.scheme} onChange={put("scheme")} />
@@ -141,8 +144,8 @@ export default function CarPanel({ car, onClose, page = false }) {
                 </Field>
                 <Field label="Purchase VAT"
                   hint={form.scheme === "Standard" ? undefined : "Margin cars have no purchase VAT."}>
-                  <MoneyInput value={form.purchase_vat} disabled={form.scheme !== "Standard"}
-                    onChange={put("purchase_vat")} />
+                  <MoneyInput value={form.scheme === "Standard" ? form.purchase_vat : "0"}
+                    disabled={form.scheme !== "Standard"} onChange={put("purchase_vat")} />
                 </Field>
                 <Field label="Buyer's fee">
                   <MoneyInput value={form.buyer_fee} onChange={put("buyer_fee")} />
@@ -152,6 +155,15 @@ export default function CarPanel({ car, onClose, page = false }) {
                 </Field>
               </div>
               <p className="small muted" style={{ marginTop: -6 }}>{FEE_VAT_HINT}</p>
+              <div className="grid-2">
+                <Field label="Assured charges">
+                  <MoneyInput value={form.assured_charge} onChange={put("assured_charge")} />
+                </Field>
+                <Field label="VAT shown on the Assured charges">
+                  <MoneyInput value={form.assured_charge_vat} onChange={put("assured_charge_vat")} />
+                </Field>
+              </div>
+              <p className="small muted" style={{ marginTop: -6 }}>{ASSURED_HINT}</p>
               <div className="grid-2">
                 <Field label="Purchase invoice no"><Input {...inp("purchase_invoice_no")} /></Field>
                 <Field label="Bought from"><Input {...inp("seller_name")} /></Field>
@@ -182,9 +194,6 @@ export default function CarPanel({ car, onClose, page = false }) {
                 <Field label="Colour"><Input {...inp("colour")} /></Field>
                 <Field label="First registered"><Input type="date" {...inp("first_reg")} /></Field>
                 <Field label="Mileage"><Input inputMode="numeric" {...inp("mileage")} /></Field>
-                <Field label="Asking price">
-                  <MoneyInput value={form.asking_price} onChange={put("asking_price")} />
-                </Field>
               </div>
               <Field label="Notes">
                 <Textarea {...inp("notes")} />
@@ -323,9 +332,10 @@ function VehicleCheck({ car }) {
 // The money for one car at a glance, beside its details on the car page.
 function CarSummary({ car }) {
   const rows = [
-    ["Bought for", car.bought_for],
+    ["Paid, incl. VAT", car.paid],
+    ["Bought for, after VAT reclaimed", car.bought_for],
+    ["Assured charges", car.assured_charge],
     ["Prep and repair costs", car.costs_net],
-    ["Asking price", car.asking_price],
     ["Sold for", car.sale_price],
     ["VAT due on the sale", car.vat_due],
   ].filter(([, v]) => v !== null && v !== undefined);
@@ -437,7 +447,15 @@ function DocumentsSection({ car }) {
   const [dragOver, setDragOver] = useState(false);
   const [upload, uploading] = useAction();
   const [remove, removing] = useAction();
+  const [rename, renaming] = useAction();
   const toast = useToast();
+
+  const renameDoc = async (d) => {
+    const name = window.prompt("New name for this document", d.filename);
+    if (name === null || !name.trim() || name.trim() === d.filename) return;
+    const res = await rename(() => api.patch(`/admin/api/documents/${d.id}`, { filename: name.trim() }));
+    if (res) docs.reload();
+  };
 
   const send = async (fileList) => {
     const files = [...(fileList || [])];
@@ -493,6 +511,7 @@ function DocumentsSection({ car }) {
               <span className="list-sub">{d.kind}</span>
             </span>
             <Button size="sm" onClick={() => window.open(`/admin/api/documents/${d.id}/file`, "_blank")}>Open</Button>
+            <Button size="sm" busy={renaming} onClick={() => renameDoc(d)}>Rename</Button>
             <IconButton icon={Trash2} label={`Delete ${d.filename}`} disabled={removing} onClick={() => removeDoc(d)} />
           </div>
         ))}

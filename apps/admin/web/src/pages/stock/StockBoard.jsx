@@ -35,9 +35,7 @@ function MiniCard({ car, onOpen }) {
           : `${car.days_in_stock ?? 0} days in stock · ${car.days_in_stage ?? 0} in stage`}
       </div>
       <div className="small">
-        <strong>{money(car.bought_for ?? car.purchase_price) || "No price"}</strong>
-        {car.asking_price ? <span className="muted"> · asking {money(car.asking_price)}</span> : null}
-      </div>
+        <strong>{money(car.bought_for ?? car.purchase_price) || "No price"}</strong>      </div>
       {sold && car.invoice && <div className="small muted">Invoice {car.invoice.invoice_no}</div>}
       <div className="row" style={{ gap: 6 }}>
         {sold ? <SoldBadge car={car} /> : !car.bill_paid && <Badge tone="orange">Bill unpaid</Badge>}

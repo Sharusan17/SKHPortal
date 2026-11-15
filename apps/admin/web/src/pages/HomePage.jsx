@@ -155,11 +155,12 @@ export default function HomePage() {
 
         {/* Summary row: the only coloured boxes on the page, all the same height. */}
         <div className="hp-top">
-          <StatCard tone="sage" icon={Package} label="In stock" sub={`${plural(stock.count || 0, "car")} at cost`}
-            value={money(stock.at_cost)} onClick={() => go("/admin/stock")} />
-          <StatCard tone="blush" icon={TrendingUp} label={`Sold · ${sold.label || "this quarter"}`}
-            sub={`${plural(sold.count || 0, "car")} · profit before VAT`} value={money(sold.profit)}
-            onClick={() => go("/admin/stock")} />
+          <StatCard tone="sage" icon={Package} label="In stock · incl. VAT"
+            sub={`${plural(stock.count || 0, "car")} · what you paid, VAT included`}
+            value={money(stock.paid ?? stock.at_cost)} onClick={() => go("/admin/stock")} />
+          <StatCard tone="blush" icon={TrendingUp} label={`Sold · ${sold.label || "this quarter"} · incl. VAT`}
+            sub={`${plural(sold.count || 0, "car")} · profit ${money(sold.profit || 0)} after VAT`}
+            value={money(sold.takings || 0)} onClick={() => go("/admin/stock")} />
           <a href="/admin/return" className="hp-ink" aria-label="Open the VAT return">
             <InkCard title={quarter.label} chip="HMRC" amount={money(d.vat_so_far)}
               footLeft="VAT so far" footRight={quarter.deadline ? `Due ${ukDate(quarter.deadline)}` : ""} />
