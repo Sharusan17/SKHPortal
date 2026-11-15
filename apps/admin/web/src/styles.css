@@ -247,7 +247,8 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .input:disabled { background: var(--panel-2); color: var(--muted); }
 .money-input { position: relative; }
 .money-input span { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
-.money-input .input { padding-left: 26px; }
+.money-input .input, .table td .money-input .input { padding-left: 26px; }
+.table td .money-input span { left: 10px; font-size: 13px; }
 
 /* "line" fields render as ordinary fields: the label sits above a normal input box (the
    label | divider | underline look was dropped as hard to read). */
