@@ -54,7 +54,7 @@ export default function BankPage() {
 
   const tabs = [
     { id: "transactions", label: "Transactions", icon: ListChecks, count: uncat },
-    { id: "import", label: "Import CSV", icon: Upload },
+    { id: "import", label: "Import statement", icon: Upload },
   ];
 
   // Panels stay mounted so unsaved work survives switching tabs.
@@ -112,7 +112,7 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
   const [onlyUncat, setOnlyUncat] = useState(false);
 
   if (txns.length === 0) {
-    return <Alert tone="info">No bank transactions in {quarter.label}. Import a Tide CSV in the Import CSV tab.</Alert>;
+    return <Alert tone="info">No bank transactions in {quarter.label}. Import a Tide CSV or Barclays PDF in the Import statement tab.</Alert>;
   }
 
   const baseOf = (t) => ({ category: t.category, vat: Number(t.vat).toFixed(2), notes: t.notes ?? "" });
@@ -250,7 +250,14 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
               return (
                 <tr key={t.id} className={isDirty(t) ? "dirty" : ""}>
                   <td style={{ whiteSpace: "nowrap" }}>{ukDate(t.date)}</td>
-                  <td>{t.description}</td>
+                  <td>
+                    {t.description}
+                    {t.account && (
+                      <span style={{ marginLeft: 6 }}>
+                        <Badge tone={t.account === "Barclays" ? "blue" : "gray"}>{t.account}</Badge>
+                      </span>
+                    )}
+                  </td>
                   <td className="r" style={{ color: Number(t.amount) > 0 ? "var(--green)" : undefined }}>
                     {money(t.amount)}
                   </td>
@@ -301,6 +308,7 @@ function ImportTab({ refresh }) {
   const [mapping, setMapping] = useState(EMPTY_MAP);
   const [failed, setFailed] = useState(null); // { id, rows } from the last import
   const [dropKey, setDropKey] = useState(0);
+  const [account, setAccount] = useState("Tide");
 
   const chooseFile = async (f) => {
     if (!f) return;
@@ -316,6 +324,7 @@ function ImportTab({ refresh }) {
     setFile(f);
     setPreview(res);
     setMapping({ ...EMPTY_MAP, ...res.guess });
+    setAccount(res.account || "Tide");
   };
 
   const ready = !!(mapping.date && (mapping.amount || mapping.paid_in || mapping.paid_out));
@@ -325,6 +334,7 @@ function ImportTab({ refresh }) {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("mapping", JSON.stringify(Object.fromEntries(ROLES.map(([r]) => [r, mapping[r] || null]))));
+    fd.append("account", account);
     const res = await run(() => api.post("/admin/api/import", fd));
     if (!res) return;
     setFailed(res.failed && res.failed.length ? { id: Date.now(), rows: res.failed } : null);
@@ -354,15 +364,24 @@ function ImportTab({ refresh }) {
         </Collapsible>
       )}
 
-      <Card title="Import a Tide CSV" icon={Upload} className="tone-lilac">
+      <Card title="Import a bank statement" icon={Upload} className="tone-lilac">
         <div className="stack">
-          <Dropzone key={dropKey} accept=".csv" disabled={busy} onFiles={(fs) => chooseFile(fs[0])}>
-            <strong>Drop a Tide CSV here, or click to choose one</strong>
-            <span className="small">Exported from Tide as CSV</span>
+          <Dropzone key={dropKey} accept=".csv,.pdf" disabled={busy} onFiles={(fs) => chooseFile(fs[0])}>
+            <strong>Drop a Tide CSV or a Barclays statement PDF here, or click to choose one</strong>
+            <span className="small">
+              PDFs are read page by page: only the transaction lines are taken, so balances, the summary
+              and the legal pages are skipped.
+            </span>
           </Dropzone>
 
           {preview && (
             <>
+              <div style={{ width: 220, maxWidth: "100%" }}>
+                <Field label="Bank account">
+                  <Select value={account} onChange={setAccount}
+                    options={(preview.accounts || ["Tide", "Barclays"]).map((a) => ({ value: a, label: a }))} />
+                </Field>
+              </div>
               <div>
                 <strong>Columns</strong>{" "}
                 <span className="muted small">(detected automatically, change if wrong)</span>

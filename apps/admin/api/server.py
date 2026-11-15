@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 import auth as admin_auth
 import core
+import bank_pdf
 import invoice_pdf
 import lookups
 
@@ -685,27 +686,39 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         n = core.auto_categorise(conn)
         return {"message": f"Categorised {plural(n, 'transaction')}.", "count": n}
 
-    def read_csv(upload: UploadFile) -> pd.DataFrame:
+    def read_statement(upload: UploadFile) -> tuple[pd.DataFrame, bool]:
+        """A Tide CSV, or a bank statement PDF (Barclays). Returns the rows and whether it was a PDF."""
+        data = upload.file.read()
+        if bank_pdf.is_pdf(data):
+            try:
+                return bank_pdf.read_statement(data), True
+            except Exception as e:  # unreadable or not a statement
+                bad(f"Couldn't read that PDF statement: {e}")
         try:
-            return core.read_bank_csv(upload.file.read())
+            return core.read_bank_csv(data), False
         except Exception as e:  # malformed CSV of any kind
             bad(f"Couldn't read that CSV: {e}")
 
     @app.post("/api/import/preview")
     def import_preview(file: UploadFile = File(...)):
-        raw = read_csv(file)
+        raw, pdf = read_statement(file)
         return jsonable_encoder({
             "columns": list(raw.columns), "guess": core.detect_columns(list(raw.columns)),
-            "rows": len(raw), "preview": raw.head(5).astype(str).to_dict("records")})
+            "rows": len(raw), "preview": raw.head(5).astype(str).to_dict("records"),
+            "pdf": pdf, "account": "Barclays" if pdf else "Tide", "accounts": core.BANK_ACCOUNTS})
 
     @app.post("/api/import")
-    def import_csv(file: UploadFile = File(...), mapping: str = Form(...), conn=Depends(db)):
-        raw = read_csv(file)
+    def import_csv(file: UploadFile = File(...), mapping: str = Form(...), account: str = Form("Tide"),
+                   conn=Depends(db)):
+        raw, _pdf = read_statement(file)
         m = {k: (v or None) for k, v in json.loads(mapping).items()}
         if not m.get("date") or not (m.get("amount") or m.get("paid_in") or m.get("paid_out")):
             bad("Pick a date column and either paid in / paid out or a signed amount.")
-        res = core.import_transactions(conn, raw, m)
-        return {"message": f"Added {plural(res.added, 'transaction')} ({res.categorised} categorised "
+        try:
+            res = core.import_transactions(conn, raw, m, account)
+        except ValueError as e:
+            bad(str(e))
+        return {"message": f"Added {plural(res.added, account + ' transaction')} ({res.categorised} categorised "
                            f"automatically, {plural(res.cars_matched, 'car payment')} matched to the "
                            f"stock book), skipped {res.skipped} already imported.",
                 "failed": res.failed}
