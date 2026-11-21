@@ -376,9 +376,14 @@ function CarSummary({ car, form }) {
           value={money(purchase)} />}
         <Line label={<>Expenses {expensesVat > 0 && <span className="vat-tag">incl. VAT</span>}</>}
           value={money(expenses)} />
+        <Line label="VAT reclaimed" value={reclaimed ? `-${money(reclaimed)}` : money(0)} />
+        {hasPrice && (
+          <div className="summary-subtotal">
+            <Line label="Total cost" value={money(purchase + expenses - reclaimed)} strong />
+          </div>
+        )}
         {sold != null && <Line label="Sold for" value={money(sold)} />}
         {vatDue != null && sold != null && <Line label="VAT due on the sale" value={money(vatDue)} />}
-        <Line label="VAT reclaimed" value={money(reclaimed)} />
         {profit != null && (
           <div className="summary-profit">
             <Line label="Profit before tax" value={money(profit)} strong tone={signTone(profit)} />
