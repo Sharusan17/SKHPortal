@@ -25,6 +25,7 @@ import bank_pdf
 import invoice_pdf
 import lookups
 import users
+import flags
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -161,6 +162,7 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
     core.tidy_saved_logo(conn, invoice_pdf.DEFAULT_LOGO)  # a logo from before the tidy-up, once
     lock = threading.Lock()  # guards `conn`, the first connection (sign-in and user admin)
     users.ensure(conn)
+    flags.ensure(conn)
     # Page requests each borrow one of a few connections, so they run side by side.
     pool = dbconn.Pool(conn, size=max(1, int(os.environ.get("ADMIN_DB_POOL", "4"))))
 
@@ -265,7 +267,8 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         with lock:
             pending = users.pending_count(conn, person)
             perms = users.permissions(conn)
-        return {**base, "user": person, "pending_requests": pending, "permissions": perms,
+            flag_counts = flags.counts(conn, person.get("email") or "")
+        return {**base, "user": person, "pending_requests": pending, "permissions": perms, "flags": flag_counts,
                 "pages": None if person["role"] == "admin" else users.USER_PAGES}
 
     @app.post("/api/auth/login")
@@ -877,12 +880,54 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         except ValueError as e:
             raise HTTPException(404, str(e))
 
+    # ---------------------------------------------------------------- flags
+
+    def everyone(conn) -> list[dict]:
+        owner_email = auth.email if auth else ""
+        owner_name = (core.get_business(conn) or {}).get("owner_name") or "Owner"
+        return flags.people(conn, owner_email, owner_name)
+
+    @app.get("/api/people")
+    def people(conn=Depends(db)):
+        return everyone(conn)
+
+    @app.get("/api/flags")
+    def list_flags(request: Request, status: str = "open", conn=Depends(db)):
+        person = me(request)
+        return jsonable_encoder(flags.list_flags(conn, status, person.get("email") or ""))
+
+    @app.get("/api/flags/{txn_id}")
+    def get_flag(txn_id: int, conn=Depends(db)):
+        try:
+            return jsonable_encoder(flags.get_flag(conn, txn_id))
+        except ValueError as e:
+            raise HTTPException(404, str(e))
+
+    @app.post("/api/flags/{txn_id}/comments")
+    def add_flag_comment(txn_id: int, body: dict, request: Request, conn=Depends(db)):
+        person = me(request)
+        try:
+            f = flags.add_comment(conn, txn_id, person, body.get("body", ""), body.get("ask_email", ""),
+                                  everyone(conn))
+        except ValueError as e:
+            bad(str(e))
+        forget()  # the sidebar's "waiting on me" count changes
+        return jsonable_encoder(f)
+
+    @app.post("/api/flags/{txn_id}/state")
+    def set_flag_state(txn_id: int, body: dict, request: Request, conn=Depends(db)):
+        try:
+            flags.set_state(conn, txn_id, str(body.get("state") or ""), me(request))
+        except ValueError as e:
+            bad(str(e))
+        return {"message": "Flag resolved." if body.get("state") == "resolved" else "Flag reopened."}
+
     @app.patch("/api/expenses/{txn_id}")
-    def update_expense(txn_id: int, body: dict, conn=Depends(db)):
+    def update_expense(txn_id: int, body: dict, request: Request, conn=Depends(db)):
         try:
             if set(body) <= {"expense_type", "car_id", "flagged"}:  # quick edits from the list
                 if "flagged" in body:
-                    core.set_flag(conn, txn_id, bool(body["flagged"]))
+                    flags.set_flag(conn, txn_id, bool(body["flagged"]), person_of(request))
                     if set(body) == {"flagged"}:
                         return {"message": "Expense flagged." if body["flagged"] else "Flag removed."}
                 if "expense_type" in body:
