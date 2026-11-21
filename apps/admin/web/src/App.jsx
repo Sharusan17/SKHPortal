@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Building2, CalendarClock, CalendarCheck, CalendarX, CheckCircle2, Circle, Car, ArrowLeftRight,
-  ClipboardCheck, KeyRound, LayoutDashboard, Loader2, LogOut, Wallet, ReceiptPoundSterling, ReceiptText, Search,
+  ClipboardCheck, LayoutDashboard, Loader2, Wallet, ReceiptPoundSterling, ReceiptText, Search,
   ShieldCheck, Users,
 } from "lucide-react";
 import { api } from "./api.js";
@@ -22,7 +22,6 @@ import BusinessPage, { BusinessForm } from "./pages/BusinessPage.jsx";
 import LoginPage from "./pages/LoginPage.jsx";
 import UsersPage from "./pages/UsersPage.jsx";
 import ApprovalsPage from "./pages/ApprovalsPage.jsx";
-import PasswordDialog from "./components/PasswordDialog.jsx";
 
 const PAGES = [
   { id: "home", label: "Home", icon: LayoutDashboard, Component: HomePage },
@@ -34,14 +33,15 @@ const PAGES = [
   { id: "approvals", label: "Approvals", icon: ClipboardCheck, Component: ApprovalsPage },
 ];
 
-// Reached from the icons beside the bell (Building: the business; People: users), not the sidebar.
+// Reached from the icons beside the bell (Building: the business; People: your account, and users
+// for admins), not the sidebar.
 const TOP_PAGES = [
   { id: "business", label: "Business", icon: Building2, Component: BusinessPage },
   { id: "users", label: "Users", icon: Users, Component: UsersPage },
 ];
 
 // The pages this person may open: everything for an admin, the server's list for a user.
-const allowed = (me, id) => !me.pages || me.pages.includes(id) || id === "approvals";
+const allowed = (me, id) => !me.pages || me.pages.includes(id) || id === "approvals" || id === "users";
 
 const DEFAULT_PAGE = "home";
 
@@ -110,7 +110,7 @@ function SidebarLogo({ name, hasLogo }) {
 
 const KIND_SHORT = { quarter: "Quarter", year: "Year", tax_year: "Tax year", financial_year: "Fin. year", all: "All time" };
 
-function Sidebar({ page, business, quarter, period, periods, setPeriodId, version, me, onPassword }) {
+function Sidebar({ page, business, quarter, period, periods, setPeriodId, version, me }) {
   const isAdmin = me.role === "admin";
   const name = business.trading_name || business.company_name;
   const kinds = Object.keys(KIND_SHORT).filter((k) => (periods.options[k] || []).length);
@@ -165,14 +165,6 @@ function Sidebar({ page, business, quarter, period, periods, setPeriodId, versio
         )}
       </div>
 
-      <div className="side-foot side-account">
-        <div className="side-who">
-          <strong>{me.name}</strong>
-          <span>{isAdmin ? "Admin" : "User"}</span>
-        </div>
-        <button type="button" className="signout" onClick={onPassword}><KeyRound size={14} /> Change password</button>
-        <button type="button" className="signout" onClick={signOut}><LogOut size={14} /> Sign out</button>
-      </div>
     </aside>
   );
 }
@@ -220,7 +212,6 @@ function Dashboard() {
       setMe({ ...d.user, pages: d.pages, pending_requests: d.pending_requests, permissions: d.permissions });
     }
   }, [meLoad.data]);
-  const [passwordOpen, setPasswordOpen] = useState(false);
   const biz = useLoad(() => api.get("/admin/api/business"), []);
   const [business, setBusiness] = useState(undefined);
   useEffect(() => { if (biz.data !== undefined) setBusiness(biz.data); }, [biz.data]);
@@ -305,7 +296,7 @@ function Dashboard() {
     <AppCtx.Provider value={ctx}>
       <div className="shell">
         <Sidebar page={carId ? "stock" : expenseId ? "expenses" : shown} business={business} quarter={quarter} period={period}
-          periods={periods} setPeriodId={setPeriodId} version={version} me={me} onPassword={() => setPasswordOpen(true)} />
+          periods={periods} setPeriodId={setPeriodId} version={version} me={me} />
         <div className="content">
           <div className="topbar">
             <label className="search">
@@ -314,12 +305,13 @@ function Dashboard() {
                 onChange={(e) => setSearch(e.target.value)} aria-label="Search" />
             </label>
             <Reminders />
+            <a href="/admin/users" className={`icon-square top-link ${page === "users" ? "active" : ""}`}
+              aria-label={isAdmin ? "Users and your account" : "Your account"} title={isAdmin ? "Users and your account" : "Your account"}
+              aria-current={page === "users" ? "page" : undefined}>
+              <Users size={18} />
+            </a>
             {isAdmin && (
               <>
-                <a href="/admin/users" className={`icon-square top-link ${page === "users" ? "active" : ""}`}
-                  aria-label="Users" title="Users" aria-current={page === "users" ? "page" : undefined}>
-                  <Users size={18} />
-                </a>
                 <a href="/admin/business" className={`icon-square top-link ${page === "business" ? "active" : ""}`}
                   aria-label="Business" title="Business" aria-current={page === "business" ? "page" : undefined}>
                   <Building2 size={18} />
@@ -332,17 +324,12 @@ function Dashboard() {
             {carId ? <CarPage key={page} carId={carId} />
               : expenseId ? <ExpensePage key={page} expenseId={expenseId} /> : <Current key={shown} />}
           </main>
-          {passwordOpen && <PasswordDialog me={me} onClose={() => setPasswordOpen(false)} />}
         </div>
       </div>
     </AppCtx.Provider>
   );
 }
 
-async function signOut() {
-  await fetch("/admin/api/auth/logout", { method: "POST" }).catch(() => {});
-  window.dispatchEvent(new Event("auth-required"));
-}
 
 // The sign-in gate: nothing loads until the server says this browser is signed in. Any request
 // that comes back "Please sign in" (an expired session) brings the sign-in page back.

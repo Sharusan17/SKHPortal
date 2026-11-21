@@ -1,15 +1,50 @@
 import { useState } from "react";
-import { KeyRound, Pencil, Plus, Save, ShieldCheck, UserRound, Users, X } from "lucide-react";
+import { KeyRound, LogOut, Pencil, Plus, Save, ShieldCheck, UserRound, Users, X } from "lucide-react";
 import {
   Alert, Badge, Button, Card, Field, Input, PageHeader, Select, Toggle, useAction, useLoad,
 } from "../components/ui.jsx";
-import { api } from "../api.js";
+import { api, signOut } from "../api.js";
 import { useApp } from "../context.js";
+import PasswordDialog from "../components/PasswordDialog.jsx";
 
 const BLANK = { first_name: "", last_name: "", email: "", role: "user", password: "" };
 
-// Admins only (/admin/users): who can sign in, their role, and what users may do.
+// /admin/users, from the people icon at the top. Everyone sees their own account (change password,
+// sign out); admins also manage who can sign in, their role, and what users may do.
 export default function UsersPage() {
+  const { me, isAdmin } = useApp();
+  return (
+    <div className="stack">
+      <PageHeader title={isAdmin ? "Users" : "Your account"}
+        subtitle={isAdmin ? "Your account, who can sign in, and what they can do" : "Your sign-in"} />
+      <AccountCard me={me} />
+      {isAdmin && <PeopleAdmin />}
+    </div>
+  );
+}
+
+function AccountCard({ me }) {
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  return (
+    <Card title="Your account" icon={UserRound}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <div className="list-text">
+          <span className="list-title">{me.name}</span>
+          <span className="list-sub">{me.email}{me.owner ? " · owner" : ""}</span>
+        </div>
+        <div className="row" style={{ gap: 8, alignItems: "center" }}>
+          <Badge tone={me.role === "admin" ? "blue" : "gray"}>{me.role === "admin" ? "Admin" : "User"}</Badge>
+          <Button icon={KeyRound} onClick={() => setPasswordOpen(true)}>Change password</Button>
+          <Button icon={LogOut} onClick={signOut}>Sign out</Button>
+        </div>
+      </div>
+      {passwordOpen && <PasswordDialog me={me} onClose={() => setPasswordOpen(false)} />}
+    </Card>
+  );
+}
+
+// Admins only: the people who can sign in, and the toggles for what users may do.
+function PeopleAdmin() {
   const { me } = useApp();
   const load = useLoad(() => api.get("/admin/api/users"), []);
   const [editing, setEditing] = useState(null); // null, "new", or a user id
@@ -30,8 +65,9 @@ export default function UsersPage() {
 
   return (
     <div className="stack">
-      <PageHeader title="Users" subtitle="Who can sign in, and what they can do"
-        actions={<Button variant="primary" icon={Plus} onClick={() => setEditing("new")}>Add user</Button>} />
+      <div className="row" style={{ justifyContent: "flex-end" }}>
+        <Button variant="primary" icon={Plus} onClick={() => setEditing("new")}>Add user</Button>
+      </div>
 
       {editing === "new" && (
         <UserForm roles={roleOptions} minPw={minPw} onCancel={() => setEditing(null)}
