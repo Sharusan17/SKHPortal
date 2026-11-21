@@ -309,8 +309,12 @@ function Dashboard() {
           periods={periods} setPeriodId={setPeriodId} version={version} me={me} />
         <div className="content">
           <div className="topbar">
-            {/* Flags sit on their own at the left; search and the other icons on the right. */}
-            <a href="/admin/flags" className={`icon-square top-link top-flag ${page === "flags" ? "active" : ""}`}
+            <label className="search">
+              <Search size={16} aria-hidden="true" />
+              <input type="search" placeholder="Search" value={search}
+                onChange={(e) => setSearch(e.target.value)} aria-label="Search" />
+            </label>
+            <a href="/admin/flags" className={`icon-square top-link ${page === "flags" ? "active" : ""}`}
               aria-label={me.flags?.waiting ? `Flags, ${me.flags.waiting} waiting on you` : "Flags"}
               title={me.flags?.waiting ? `${me.flags.waiting} waiting on you` : `${me.flags?.open || 0} open flags`}
               aria-current={page === "flags" ? "page" : undefined} style={{ position: "relative" }}>
@@ -321,11 +325,6 @@ function Dashboard() {
                 </span>
               )}
             </a>
-            <label className="search">
-              <Search size={16} aria-hidden="true" />
-              <input type="search" placeholder="Search" value={search}
-                onChange={(e) => setSearch(e.target.value)} aria-label="Search" />
-            </label>
             <Reminders />
             <a href="/admin/users" className={`icon-square top-link ${page === "users" ? "active" : ""}`}
               aria-label={isAdmin ? "Users and your account" : "Your account"} title={isAdmin ? "Users and your account" : "Your account"}
