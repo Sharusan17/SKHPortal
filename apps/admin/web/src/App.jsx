@@ -169,8 +169,7 @@ function Sidebar({ page, business, quarter, period, periods, setPeriodId, versio
   );
 }
 
-// The server doesn't reload itself: after an update it keeps running the old code until run.bat
-// is restarted. An older server has no /api/version at all, which counts as out of date too.
+// After an update goes live the page in an open tab is the old one: offer a reload.
 function StaleBanner() {
   const [stale, setStale] = useState(false);
   useEffect(() => {
@@ -186,7 +185,7 @@ function StaleBanner() {
   if (!stale) return null;
   return (
     <div className="stale-banner" role="alert">
-      The app has been updated. Close the run.bat window and open run.bat again to use the new version.
+      A new version is live. <button type="button" className="link-btn" onClick={() => window.location.reload()}>Reload the page</button> to use it.
     </div>
   );
 }
@@ -259,7 +258,14 @@ function Dashboard() {
 
   const error = meta.error || biz.error;
   if (error) {
-    return <div className="loading-screen">Can't reach the VAT server: {error.message}. Is run.bat still open?</div>;
+    return (
+      <div className="loading-screen">
+        <div style={{ textAlign: "center" }}>
+          <p>Can't reach the server: {error.message}</p>
+          <button type="button" className="btn btn-secondary" onClick={() => window.location.reload()}>Try again</button>
+        </div>
+      </div>
+    );
   }
   if (!meta.data || business === undefined || !me) {
     return <div className="loading-screen"><Loader2 className="spin" /></div>;
