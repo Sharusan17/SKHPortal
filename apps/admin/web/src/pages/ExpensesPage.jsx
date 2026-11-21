@@ -28,6 +28,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 export default function ExpensesPage() {
   const { meta, period, version, refresh, search } = useApp();
   const [filter, setFilter] = useState(startFilter);
+  const [carFilter, setCarFilter] = useState(""); // "" all cars, "general" no car, or a car id
   const [adding, setAdding] = useState(false);
   const load = useLoad(() => api.get("/admin/api/expenses", { p: period.id }), [period.id, version]);
   const stock = useLoad(() => api.get("/admin/api/stock"), [version]);
@@ -45,8 +46,32 @@ export default function ExpensesPage() {
       || (filter === "receipt" && x.needs_receipt)
       || (filter === "untyped" && (x.uncategorised || !x.type_set))
       || (filter === "flagged" && x.flagged))
+    && (!carFilter || (carFilter === "general" ? !x.car_id : String(x.car_id) === carFilter))
     && (!term || `${x.description} ${x.car_reg ?? ""} ${x.notes}`.toLowerCase().includes(term))
   ));
+
+  // Car filter: the cars that have costs in this period, with how many lines each.
+  const perCar = {};
+  lines.forEach((x) => { if (x.car_id) perCar[x.car_id] = (perCar[x.car_id] || 0) + 1; });
+  const carName = (id) => {
+    const c = cars.find((k) => k.id === Number(id));
+    return c ? [c.reg, c.make_model].filter(Boolean).join(" · ") : (lines.find((x) => x.car_id === Number(id))?.car_reg || `Car ${id}`);
+  };
+  const generalCount = lines.filter((x) => !x.car_id).length;
+  const carFilterOptions = [
+    { value: "", label: "All cars" },
+    { value: "general", label: `General, no car (${generalCount})` },
+    ...Object.keys(perCar)
+      .map((id) => ({ value: id, label: `${carName(id)} (${perCar[id]})` }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+  ];
+  // Picked car no longer has costs in this period (period changed): show it anyway so it can be cleared.
+  if (carFilter && carFilter !== "general" && !perCar[carFilter]) {
+    carFilterOptions.push({ value: carFilter, label: `${carName(carFilter)} (0)` });
+  }
+  const shownDone = view.filter((x) => !x.uncategorised);
+  const shownGross = shownDone.reduce((s, x) => s + Number(x.gross), 0);
+  const shownVat = shownDone.reduce((s, x) => s + Number(x.vat), 0);
 
   return (
     <div className="stack">
@@ -79,7 +104,19 @@ export default function ExpensesPage() {
               label: f.value === "receipt" && totals.missing_receipts ? `${f.label} (${totals.missing_receipts})`
                 : f.value === "flagged" && totals.flagged ? `${f.label} (${totals.flagged})` : f.label,
             }))} value={filter} onChange={setFilter} ariaLabel="Filter expenses" />
+            <div style={{ width: 240, maxWidth: "100%" }}>
+              <Select aria-label="Filter by car" options={carFilterOptions} value={carFilter} onChange={setCarFilter} />
+            </div>
           </div>
+          {carFilter && (
+            <div className="row muted small" style={{ justifyContent: "space-between", marginBottom: 10 }}>
+              <span>
+                {carFilter === "general" ? "General costs (no car)" : carName(carFilter)}
+                {`: ${plural(view.length, "line")} · ${money(shownGross)} spent · ${money(shownVat)} VAT`}
+              </span>
+              <button type="button" className="link-btn small" onClick={() => setCarFilter("")}>Show all cars</button>
+            </div>
+          )}
           <ExpenseTable lines={view} meta={meta} cars={cars} empty={lines.length === 0
             ? `No costs in ${period.label}. Import a Tide CSV or Barclays PDF on the Bank page, or add a cash expense.`
             : "Nothing matches."} />
