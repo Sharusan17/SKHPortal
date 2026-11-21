@@ -17,7 +17,6 @@ import BankPage from "./pages/BankPage.jsx";
 import ExpensesPage from "./pages/ExpensesPage.jsx";
 import ExpensePage from "./pages/ExpensePage.jsx";
 import FlagsPage from "./pages/FlagsPage.jsx";
-import FlagPage from "./pages/FlagPage.jsx";
 import CarPage from "./pages/CarPage.jsx";
 import Reminders from "./components/Reminders.jsx";
 import BusinessPage, { BusinessForm } from "./pages/BusinessPage.jsx";
@@ -30,7 +29,6 @@ const PAGES = [
   { id: "stock", label: "Stock Book", icon: Car, Component: StockPage },
   { id: "invoices", label: "Create Invoice", icon: ReceiptPoundSterling, Component: InvoicesPage },
   { id: "expenses", label: "Add Expenses", icon: Wallet, Component: ExpensesPage },
-  { id: "flags", label: "Flags", icon: Flag, Component: FlagsPage },
   { id: "bank", label: "Bank", icon: ArrowLeftRight, Component: BankPage },
   { id: "return", label: "VAT Return", icon: ReceiptText, Component: ReturnPage },
   { id: "approvals", label: "Approvals", icon: ClipboardCheck, Component: ApprovalsPage },
@@ -41,6 +39,7 @@ const PAGES = [
 const TOP_PAGES = [
   { id: "business", label: "Business", icon: Building2, Component: BusinessPage },
   { id: "users", label: "Users", icon: Users, Component: UsersPage },
+  { id: "flags", label: "Flags", icon: Flag, Component: FlagsPage },
 ];
 
 // The pages this person may open: everything for an admin, the server's list for a user.
@@ -135,13 +134,6 @@ function Sidebar({ page, business, quarter, period, periods, setPeriodId, versio
             aria-current={page === p.id ? "page" : undefined}>
             <p.icon size={18} />
             <span>{p.id === "approvals" && !isAdmin ? "My requests" : p.label}</span>
-            {p.id === "flags" && (me.flags?.waiting > 0 || me.flags?.open > 0) && (
-              <span className={`nav-count ${me.flags.waiting > 0 ? "" : "nav-count-quiet"}`}
-                aria-label={me.flags.waiting > 0 ? `${me.flags.waiting} waiting on you` : `${me.flags.open} open`}
-                title={me.flags.waiting > 0 ? "Waiting on you" : "Open flags"}>
-                {me.flags.waiting > 0 ? me.flags.waiting : me.flags.open}
-              </span>
-            )}
             {p.id === "approvals" && me.pending_requests > 0 && (
               <span className="nav-count" aria-label={`${me.pending_requests} waiting`}>{me.pending_requests}</span>
             )}
@@ -305,6 +297,7 @@ function Dashboard() {
   const isAdmin = me.role === "admin";
   const carId = page.startsWith("car/") ? Number(page.slice(4)) : null;
   const expenseId = page.startsWith("expense/") ? Number(page.slice(8)) : null;
+  // Old /admin/flag/<id> links: a flag lives on its expense's page now.
   const flagId = page.startsWith("flag/") ? Number(page.slice(5)) : null;
   // A user who opens an admin page (an old link, a typed address) lands on Home instead.
   const shown = carId || expenseId || flagId || allowed(me, page) ? page : DEFAULT_PAGE;
@@ -312,7 +305,7 @@ function Dashboard() {
   return (
     <AppCtx.Provider value={ctx}>
       <div className="shell">
-        <Sidebar page={carId ? "stock" : expenseId ? "expenses" : flagId ? "flags" : shown} business={business} quarter={quarter} period={period}
+        <Sidebar page={carId ? "stock" : expenseId || flagId ? "expenses" : shown} business={business} quarter={quarter} period={period}
           periods={periods} setPeriodId={setPeriodId} version={version} me={me} />
         <div className="content">
           <div className="topbar">
@@ -321,6 +314,17 @@ function Dashboard() {
               <input type="search" placeholder="Search" value={search}
                 onChange={(e) => setSearch(e.target.value)} aria-label="Search" />
             </label>
+            <a href="/admin/flags" className={`icon-square top-link ${page === "flags" ? "active" : ""}`}
+              aria-label={me.flags?.waiting ? `Flags, ${me.flags.waiting} waiting on you` : "Flags"}
+              title={me.flags?.waiting ? `${me.flags.waiting} waiting on you` : `${me.flags?.open || 0} open flags`}
+              aria-current={page === "flags" ? "page" : undefined} style={{ position: "relative" }}>
+              <Flag size={18} />
+              {(me.flags?.waiting > 0 || me.flags?.open > 0) && (
+                <span className={`top-count ${me.flags.waiting > 0 ? "" : "top-count-quiet"}`}>
+                  {me.flags.waiting > 0 ? me.flags.waiting : me.flags.open}
+                </span>
+              )}
+            </a>
             <Reminders />
             <a href="/admin/users" className={`icon-square top-link ${page === "users" ? "active" : ""}`}
               aria-label={isAdmin ? "Users and your account" : "Your account"} title={isAdmin ? "Users and your account" : "Your account"}
@@ -340,7 +344,7 @@ function Dashboard() {
           <main className="main">
             {carId ? <CarPage key={page} carId={carId} />
               : expenseId ? <ExpensePage key={page} expenseId={expenseId} />
-                : flagId ? <FlagPage key={page} flagId={flagId} /> : <Current key={shown} />}
+                : flagId ? <ExpensePage key={page} expenseId={flagId} /> : <Current key={shown} />}
           </main>
         </div>
       </div>
