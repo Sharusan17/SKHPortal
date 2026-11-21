@@ -421,6 +421,9 @@ function CostsSection({ car }) {
   const available = (txns.data || [])
     .filter((t) => Number(t.amount) < 0 && t.car_id == null)
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  // What was actually paid for each cost, VAT included (the VAT part still shows under it).
+  const gross = (c) => Number(c.net) + Number(c.vat);
+  const total = costs.reduce((a, c) => a + gross(c), 0);
   const receiptsFor = (txnId) => (paper.data?.receipts || []).filter((r) => r.txn_id === txnId);
 
   const link = async (txnId, carId) => {
@@ -446,7 +449,7 @@ function CostsSection({ car }) {
           {costs.map((c) => (
             <div key={c.id} className="list-row" style={{ alignItems: "center" }}>
               <span className="list-text">
-                <span className="list-title">{c.description}</span>
+                <a className="list-title row-link" href={`/admin/expense/${c.id}`} title="Open this expense">{c.description}</a>
                 <span className="list-sub">
                   {ukDate(c.date)} · {shortCategory(c.category)} · VAT {money(c.vat)}
                 </span>
@@ -460,15 +463,15 @@ function CostsSection({ car }) {
                   </span>
                 )}
               </span>
-              <span className="list-value" style={{ color: amountColour(c.net), fontWeight: 600 }}>{money(c.net)}</span>
+              <span className="list-value" style={{ color: amountColour(gross(c)), fontWeight: 600 }}>{money(gross(c))}</span>
               <IconButton icon={X} label={`Unlink ${c.description}`} disabled={linking}
                 onClick={() => link(c.id, null)} />
             </div>
           ))}
           {costs.length > 0 && (
             <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-              <span className="small muted">Total</span>
-              <strong style={{ color: amountColour(car.costs_net) }}>{money(car.costs_net)}</strong>
+              <span className="small muted">Total, incl. VAT</span>
+              <strong style={{ color: amountColour(total) }}>{money(total)}</strong>
             </div>
           )}
         </div>
