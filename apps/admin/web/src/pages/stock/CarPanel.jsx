@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Calculator, CheckCircle2, FileText, Save, Trash2, X } from "lucide-react";
+import { ArrowLeft, Calculator, CheckCircle2, FileText, Link2, Paperclip, Receipt, Save, Trash2, X } from "lucide-react";
 import { api } from "../../api.js";
 import {
   Alert, Badge, Button, Card, Field, IconButton, Input, MoneyInput, Segmented, Select, Tabs, Textarea,
@@ -95,11 +95,6 @@ export default function CarPanel({ car, onClose, page = false }) {
   const savePurchase = () => saveFields(PURCHASE_KEYS, form.scheme === "Standard" ? {} : { purchase_vat: null });
   const saveVehicle = () => saveFields(VEHICLE_KEYS);
 
-  const markBillPaid = async () => {
-    const res = await save(() => api.patch(`/admin/api/cars/${car.id}`, { purchase_paid_on: today }));
-    if (res) { put("purchase_paid_on")(today); refresh(); }
-  };
-
   const moveStage = async () => {
     const res = await save(() => api.patch(`/admin/api/cars/${car.id}`, { status: stageTo }));
     if (res) refresh();
@@ -154,7 +149,7 @@ export default function CarPanel({ car, onClose, page = false }) {
                 <Field label="Buyer's fee">
                   <MoneyInput value={form.buyer_fee} onChange={put("buyer_fee")} />
                 </Field>
-                <Field label="VAT shown on the fee">
+                <Field label="VAT shown on the buyer's fee">
                   <MoneyInput value={form.buyer_fee_vat} onChange={put("buyer_fee_vat")} />
                 </Field>
               </div>
@@ -171,16 +166,12 @@ export default function CarPanel({ car, onClose, page = false }) {
               <div className="grid-2">
                 <Field label="Purchase invoice no"><Input {...inp("purchase_invoice_no")} /></Field>
                 <Field label="Bill paid on"
-                  hint={car.bill_paid && !car.purchase_paid_on
-                    ? "Marked paid from a matching bank payment." : undefined}>
+                  hint={car.purchase_payments?.length && !car.purchase_paid_on
+                    ? "Paid by the linked bank payment below." : "For a bill paid in cash or outside the bank."}>
                   <Input type="date" {...inp("purchase_paid_on")} />
                 </Field>
-                {!car.purchase_paid_on && (
-                  <div style={{ display: "flex", alignItems: "flex-end" }}>
-                    <Button icon={CheckCircle2} busy={saving} onClick={markBillPaid}>Mark bill paid today</Button>
-                  </div>
-                )}
               </div>
+              <PurchasePayment car={car} />
               <div className="row" style={{ justifyContent: "flex-end" }}>
                 <Button variant="primary" icon={Save} busy={saving} onClick={savePurchase}>Save purchase</Button>
               </div>
@@ -334,25 +325,26 @@ function VehicleCheck({ car }) {
 
 // The money for one car at a glance, beside its details on the car page.
 function CarSummary({ car }) {
+  // [label, value, colour]: money coming in green, money going out red.
   const rows = [
-    ["Paid, incl. VAT", car.paid],
-    ["Bought for, after VAT reclaimed", car.bought_for],
-    ["Assured charges", car.assured_charge],
-    ["Prep and repair costs", car.costs_net],
-    ["Sold for", car.sale_price],
-    ["VAT due on the sale", car.vat_due],
+    ["Paid, incl. VAT", car.paid, "out"],
+    ["Bought for, after VAT reclaimed", car.bought_for, "out"],
+    ["Assured charges", car.assured_charge, "out"],
+    ["Prep and repair costs", car.costs_net, "out"],
+    ["Sold for", car.sale_price, "in"],
+    ["VAT due on the sale", car.vat_due, "out"],
   ].filter(([, v]) => v !== null && v !== undefined);
   return (
     <Card title="Summary">
       <div className="stack-sm">
-        {rows.map(([label, v]) => <Line key={label} label={label} value={money(v)} />)}
-        {car.profit != null && <Line label="Profit before tax" value={money(car.profit)} strong />}
+        {rows.map(([label, v, tone]) => <Line key={label} label={label} value={money(v)} tone={Number(v) ? tone : undefined} />)}
+        {car.profit != null && <Line label="Profit before tax" value={money(car.profit)} strong tone={signTone(car.profit)} />}
         <Line label="Days in stock" value={car.days_in_stock ?? 0} />
         {car.invoice && <Line label={`Invoice ${car.invoice.invoice_no}`} value={car.invoice.status === "paid"
-          ? "Paid" : `${money(car.invoice.outstanding)} to come`} />}
+          ? "Paid" : `${money(car.invoice.outstanding)} to come`} tone={car.invoice.status === "paid" ? "in" : undefined} />}
         {(car.credit_notes || []).map((n) => (
           <Line key={n.credit_no} label={`${n.credit_no} · ${n.kind_label} (invoice ${n.invoice_no})`}
-            value={`-${money(n.amount)}`} />
+            value={`-${money(n.amount)}`} tone="out" />
         ))}
       </div>
     </Card>
@@ -370,15 +362,20 @@ const drawer = {
 
 // ---------------------------------------------------------------- costs
 
+// Green for a positive amount, red for a negative one.
+const amountColour = (v) => (Number(v) > 0 ? "var(--green)" : Number(v) < 0 ? "var(--red)" : undefined);
+
 function CostsSection({ car }) {
-  const { quarter, version, refresh } = useApp();
-  const txns = useLoad(() => api.get("/admin/api/transactions", { q: quarter.id }), [quarter.id, version]);
+  const { version, refresh } = useApp();
+  const txns = useLoad(() => api.get("/admin/api/transactions", { p: "all" }), [version]);
+  const paper = useLoad(() => api.get(`/admin/api/cars/${car.id}/paperwork`), [car.id, version]);
   const [pick, setPick] = useState("");
   const [linkAct, linking] = useAction();
   const costs = car.costs || [];
   const available = (txns.data || [])
-    .filter((t) => t.amount < 0 && t.car_id == null)
+    .filter((t) => Number(t.amount) < 0 && t.car_id == null)
     .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  const receiptsFor = (txnId) => (paper.data?.receipts || []).filter((r) => r.txn_id === txnId);
 
   const link = async (txnId, carId) => {
     const res = await linkAct(() => api.post(`/admin/api/transactions/${txnId}/link`, { car_id: carId }));
@@ -386,45 +383,53 @@ function CostsSection({ car }) {
   };
 
   const pickOptions = [
-    { value: "", label: available.length ? "Choose a bank payment…" : "No unlinked payments this quarter" },
+    { value: "", label: available.length ? "Choose a bank payment…" : "No unlinked payments" },
     ...available.map((t) => ({
       value: String(t.id), label: `${ukDate(t.date)} · ${t.description} · ${money(-t.amount)}`,
     })),
   ];
 
   return (
-    <Card>
-      <div className="stack">
-        <div>
-          <h3 style={{ marginBottom: 4 }}>Linked costs</h3>
-          <p className="small muted">
+    <div className="stack">
+      <Card title="Linked costs" icon={Receipt}>
+        <div className="stack">
+          <p className="small muted" style={{ marginTop: -6 }}>
             Bank payments that are costs of this car. They count towards profit. Linking doesn't change the VAT on a line.
           </p>
-        </div>
-
-        {costs.length === 0 && <p className="small muted">No costs linked yet.</p>}
-        {costs.map((c) => (
-          <div key={c.id} className="list-row" style={{ alignItems: "center" }}>
-            <span className="list-text">
-              <span className="list-title">{c.description}</span>
-              <span className="list-sub">
-                {ukDate(c.date)} · {shortCategory(c.category)} · VAT {money(c.vat)}
-                {c.receipts ? ` · ${plural(c.receipts, "receipt")}` : ""}
+          {costs.length === 0 && <p className="small muted">No costs linked yet.</p>}
+          {costs.map((c) => (
+            <div key={c.id} className="list-row" style={{ alignItems: "center" }}>
+              <span className="list-text">
+                <span className="list-title">{c.description}</span>
+                <span className="list-sub">
+                  {ukDate(c.date)} · {shortCategory(c.category)} · VAT {money(c.vat)}
+                </span>
+                {receiptsFor(c.id).length > 0 && (
+                  <span className="row" style={{ gap: 6, marginTop: 4 }}>
+                    {receiptsFor(c.id).map((r) => (
+                      <a key={r.id} className="chip-link" href={`/admin/api/receipts/${r.id}/file`} target="_blank" rel="noreferrer">
+                        <Paperclip size={12} />{r.filename}
+                      </a>
+                    ))}
+                  </span>
+                )}
               </span>
-            </span>
-            <span className="list-value">{money(c.net)} net</span>
-            <IconButton icon={X} label={`Unlink ${c.description}`} disabled={linking}
-              onClick={() => link(c.id, null)} />
-          </div>
-        ))}
-        {costs.length > 0 && (
-          <div className="small" style={{ textAlign: "right" }}>
-            Total net <strong>{money(car.costs_net)}</strong>
-          </div>
-        )}
+              <span className="list-value" style={{ color: amountColour(c.net), fontWeight: 600 }}>{money(c.net)} net</span>
+              <IconButton icon={X} label={`Unlink ${c.description}`} disabled={linking}
+                onClick={() => link(c.id, null)} />
+            </div>
+          ))}
+          {costs.length > 0 && (
+            <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+              <span className="small muted">Total net</span>
+              <strong style={{ color: amountColour(car.costs_net) }}>{money(car.costs_net)}</strong>
+            </div>
+          )}
+        </div>
+      </Card>
 
-        <div className="stack-sm" style={{ borderTop: "1px solid var(--border)", paddingTop: 14 }}>
-          <strong>Link a bank payment</strong>
+      <Card title="Link a bank payment" icon={Link2}>
+        <div className="stack-sm">
           {txns.error && <Alert tone="error">{txns.error.message}</Alert>}
           <div className="row" style={{ gap: 8, alignItems: "stretch" }}>
             <div style={{ flex: "1 1 260px", minWidth: 0 }}>
@@ -434,10 +439,10 @@ function CostsSection({ car }) {
               Link
             </Button>
           </div>
-          <p className="small muted">Only money-out lines from {quarter.label} that aren't linked to a car are listed.</p>
+          <p className="small muted">Money-out lines from any date that aren't linked to a car yet, newest first.</p>
         </div>
-      </div>
-    </Card>
+      </Card>
+    </div>
   );
 }
 
@@ -485,7 +490,8 @@ function DocumentsSection({ car }) {
   const list = docs.data || [];
 
   return (
-    <Card>
+    <div className="stack">
+    <Card title="Uploaded documents" icon={FileText}>
       <div className="stack">
         <div className="row" style={{ alignItems: "flex-end" }}>
           <div style={{ width: 220, maxWidth: "100%" }}>
@@ -521,16 +527,118 @@ function DocumentsSection({ car }) {
         {list.length === 0 && docs.loading && <p className="small muted">Loading…</p>}
       </div>
     </Card>
+    <Paperwork car={car} />
+    </div>
+  );
+}
+
+// Everything else on file for the car: its sales invoice, credit notes and the receipts on its
+// linked costs (attached on the Bank or Expenses pages).
+function Paperwork({ car }) {
+  const { version } = useApp();
+  const paper = useLoad(() => api.get(`/admin/api/cars/${car.id}/paperwork`), [car.id, version]);
+  const p = paper.data;
+  const open = (url) => window.open(url, "_blank");
+  const rows = p ? [
+    ...p.invoices.map((i) => ({
+      key: `inv${i.id}`, icon: FileText, title: `Sales invoice ${i.invoice_no}${i.void ? " (void)" : ""}`,
+      sub: i.invoice_date ? ukDate(i.invoice_date) : "Invoice", url: `/admin/api/invoices/${i.id}/pdf`,
+    })),
+    ...p.credit_notes.map((n) => ({
+      key: `cn${n.id}`, icon: FileText, title: `Credit note ${n.credit_no}`,
+      sub: `${n.kind_label} · invoice ${n.invoice_no}${n.credit_date ? ` · ${ukDate(n.credit_date)}` : ""}`,
+      url: `/admin/api/credit-notes/${n.id}/pdf`,
+    })),
+    ...p.receipts.map((r) => ({
+      key: `rc${r.id}`, icon: Paperclip, title: r.filename,
+      sub: `Receipt · ${ukDate(r.date)} · ${r.description} · ${money(Math.abs(Number(r.amount)))}`,
+      url: `/admin/api/receipts/${r.id}/file`,
+    })),
+  ] : [];
+  return (
+    <Card title="Invoices and receipts" icon={Receipt}>
+      <div className="stack-sm">
+        {paper.error && <Alert tone="error">{paper.error.message}</Alert>}
+        {p && rows.length === 0 && (
+          <p className="small muted">No invoices or receipts yet. Receipts attached to this car's costs show here too.</p>
+        )}
+        {rows.map((r) => (
+          <div key={r.key} className="list-row" style={{ alignItems: "center" }}>
+            <span className="list-icon"><r.icon size={16} /></span>
+            <span className="list-text">
+              <span className="list-title">{r.title}</span>
+              <span className="list-sub">{r.sub}</span>
+            </span>
+            <Button size="sm" onClick={() => open(r.url)}>Open</Button>
+          </div>
+        ))}
+        {!p && paper.loading && <p className="small muted">Loading…</p>}
+      </div>
+    </Card>
   );
 }
 
 // ---------------------------------------------------------------- sale
 
-function Line({ label, value, strong = false }) {
+// tone: "in" green (money coming in, or a profit), "out" red (money going out, or a loss).
+const TONE_COLOUR = { in: "var(--green)", out: "var(--red)" };
+const signTone = (v) => (Number(v) > 0 ? "in" : Number(v) < 0 ? "out" : undefined);
+
+function Line({ label, value, strong = false, tone }) {
   return (
     <div className="row" style={{ justifyContent: "space-between", padding: "6px 0" }}>
       <span className={strong ? "" : "muted"}>{label}</span>
-      <span className="num" style={strong ? { fontWeight: 600 } : undefined}>{value}</span>
+      <span className="num" style={{ fontWeight: strong ? 600 : undefined, color: TONE_COLOUR[tone] }}>{value}</span>
+    </div>
+  );
+}
+
+// The bank payment(s) that paid for the car. Matched automatically when the amount and date fit;
+// pick one here when it wasn't, or to change it.
+function PurchasePayment({ car }) {
+  const { version, refresh } = useApp();
+  const txns = useLoad(() => api.get("/admin/api/transactions", { p: "all" }), [version]);
+  const [pick, setPick] = useState("");
+  const [act, busy] = useAction();
+  const linked = car.purchase_payments || [];
+  const send = async (txnId, link) => {
+    const res = await act(() => api.post(`/admin/api/cars/${car.id}/purchase-payment`, { txn_id: txnId, link }));
+    if (res) { setPick(""); refresh(); }
+  };
+  // Money-out lines not tied to any car, closest in amount to what was paid first.
+  const target = Number(car.paid) || 0;
+  const options = (txns.data || [])
+    .filter((t) => Number(t.amount) < 0 && !t.car_id)
+    .sort((a, b) => Math.abs(-Number(a.amount) - target) - Math.abs(-Number(b.amount) - target))
+    .map((t) => ({ value: String(t.id), label: `${ukDate(t.date)} · ${t.description} · ${money(-t.amount)}` }));
+
+  return (
+    <div className="purchase-pay">
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+        <strong>Purchase payment</strong>
+        {linked.length > 0 ? <Badge tone="green">Bill paid</Badge> : <Badge tone="orange">Not linked</Badge>}
+      </div>
+      {linked.map((t) => (
+        <div key={t.id} className="list-row" style={{ alignItems: "center" }}>
+          <span className="list-text">
+            <span className="list-title">{t.description}</span>
+            <span className="list-sub">{ukDate(t.date)} · bank payment</span>
+          </span>
+          <span className="list-value" style={{ color: "var(--red)" }}>{money(-t.amount)}</span>
+          <IconButton icon={X} label={`Unlink ${t.description}`} disabled={busy} onClick={() => send(t.id, false)} />
+        </div>
+      ))}
+      <div className="row" style={{ gap: 8, alignItems: "stretch" }}>
+        <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+          <Select value={pick} onChange={setPick} aria-label="Bank payment for the purchase"
+            options={[{ value: "", label: linked.length ? "Add another bank payment…" : "Link the bank payment…" }, ...options]} />
+        </div>
+        <Button icon={Link2} disabled={!pick} busy={busy} onClick={() => send(Number(pick), true)}>Link</Button>
+      </div>
+      <p className="small muted">
+        Matched automatically when a bank payment fits the price and date. Linking marks the bill paid and
+        sets the bank line to Car purchase. Closest amounts are listed first.
+      </p>
     </div>
   );
 }
@@ -564,9 +672,9 @@ function SoldSummary({ car }) {
     <div className="stack">
       <Card>
         <Line label="Sold on" value={ukDate(car.sale_date)} />
-        <Line label="Sale price" value={money(car.sale_price)} />
+        <Line label="Sale price" value={money(car.sale_price)} tone="in" />
         <Line label="Sold to" value={car.buyer_name || "Not recorded"} />
-        {car.px_allowance ? <Line label="Part-ex allowance" value={money(car.px_allowance)} /> : null}
+        {car.px_allowance ? <Line label="Part-ex allowance" value={money(car.px_allowance)} tone="out" /> : null}
         <div className="row" style={{ justifyContent: "space-between", padding: "6px 0" }}>
           <span className="muted">Invoice</span>
           <span className="row" style={{ gap: 8 }}>
@@ -574,19 +682,20 @@ function SoldSummary({ car }) {
             {inv && <Badge tone={invTone}>{invText}</Badge>}
           </span>
         </div>
-        {inv && <Line label="Outstanding" value={money(inv.outstanding)} />}
+        {inv && <Line label="Outstanding" value={money(inv.outstanding)} tone={Number(inv.outstanding) > 0 ? "out" : "in"} />}
         <div className="row" style={{ marginTop: 10 }}>
           <Button icon={FileText} onClick={() => { navigate("/admin/invoices"); }}>Open invoices</Button>
         </div>
       </Card>
       <div className="panel tone-sand">
         <div className="panel-head"><h3>Profit</h3></div>
-        <Line label="Sale price" value={money(car.sale_price)} />
-        <Line label="less VAT due" value={money(car.vat_due) || "None"} />
-        <Line label="less bought for" value={money(car.bought_for) || "Not recorded"} />
-        <Line label="less costs (net)" value={money(car.costs_net)} />
+        <Line label="Sale price" value={money(car.sale_price)} tone="in" />
+        <Line label="less VAT due" value={money(car.vat_due) || "None"} tone={Number(car.vat_due) ? "out" : undefined} />
+        <Line label="less bought for" value={money(car.bought_for) || "Not recorded"} tone={car.bought_for != null ? "out" : undefined} />
+        <Line label="less costs (net)" value={money(car.costs_net)} tone={Number(car.costs_net) ? "out" : undefined} />
         <div style={{ borderTop: "1px solid var(--border-strong)", marginTop: 6 }}>
-          <Line label="Profit ex VAT" value={car.profit != null ? money(car.profit) : "Needs a purchase price"} strong />
+          <Line label="Profit ex VAT" value={car.profit != null ? money(car.profit) : "Needs a purchase price"} strong
+            tone={car.profit != null ? signTone(car.profit) : undefined} />
         </div>
       </div>
     </div>
