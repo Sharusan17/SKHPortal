@@ -327,7 +327,19 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         with lock:
             return {"users": jsonable_encoder(users.list_users(conn)), "roles": users.ROLES,
                     "permissions": users.permissions(conn), "permission_labels": users.PERMISSIONS,
-                    "owner_email": auth.email if auth else "", "min_password": users.MIN_PASSWORD}
+                    "owner_email": auth.email if auth else "", "min_password": users.MIN_PASSWORD,
+                    "owner": users.owner_name(conn)}
+
+    @app.put("/api/owner")
+    def set_owner(body: dict):
+        """The owner's name (shown on Users, Home, comments). Email and password stay on Railway."""
+        try:
+            with lock:
+                o = users.set_owner_name(conn, body.get("first_name", ""), body.get("last_name", ""))
+        except ValueError as e:
+            bad(str(e))
+        forget()
+        return {**o, "message": f"Owner's name saved: {o['name']}."}
 
     @app.post("/api/users")
     def add_person(body: dict):

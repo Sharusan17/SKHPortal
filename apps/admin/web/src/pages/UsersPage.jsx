@@ -52,7 +52,8 @@ function PeopleAdmin() {
 
   if (load.error) return <Alert tone="error">{load.error.message}</Alert>;
   if (!load.data) return <p className="muted">Loading…</p>;
-  const { users, roles, permissions, permission_labels: labels, owner_email: ownerEmail, min_password: minPw } = load.data;
+  const { users, roles, permissions, permission_labels: labels, owner_email: ownerEmail, min_password: minPw,
+    owner } = load.data;
   const roleOptions = Object.entries(roles).map(([value, label]) => ({ value, label }));
 
   const toggle = async (key, on) => {
@@ -77,14 +78,20 @@ function PeopleAdmin() {
       <div className="grid-expenses">
         <Card title="People" icon={Users}>
           <div className="stack-sm">
-            <div className="list-row" style={{ alignItems: "center" }}>
-              <span className="list-icon"><ShieldCheck size={16} /></span>
-              <span className="list-text">
-                <span className="list-title">Owner</span>
-                <span className="list-sub">{ownerEmail} · signs in with the password set on Railway</span>
-              </span>
-              <Badge tone="blue">Admin</Badge>
-            </div>
+            {editing === "owner" ? (
+              <OwnerForm owner={owner} onCancel={() => setEditing(null)}
+                onSaved={() => { setEditing(null); load.reload(); window.dispatchEvent(new Event("approvals-changed")); }} />
+            ) : (
+              <div className="list-row" style={{ alignItems: "center" }}>
+                <span className="list-icon"><ShieldCheck size={16} /></span>
+                <span className="list-text">
+                  <span className="list-title">{owner?.name || "Owner"}{me.owner ? " (you)" : ""}</span>
+                  <span className="list-sub">{ownerEmail} · owner · signs in with the password set on Railway</span>
+                </span>
+                <Badge tone="blue">Admin</Badge>
+                <Button size="sm" icon={Pencil} onClick={() => setEditing("owner")}>Edit</Button>
+              </div>
+            )}
             {users.length === 0 && <p className="small muted">No other users yet. Add one to give someone their own sign-in.</p>}
             {users.map((u) => (editing === u.id ? (
               <UserForm key={u.id} user={u} roles={roleOptions} minPw={minPw} self={u.email === me.email}
@@ -159,5 +166,34 @@ function UserForm({ user, roles, minPw, self = false, onCancel, onSaved }) {
         </div>
       </div>
     </Card>
+  );
+}
+
+// The owner's name only: their email and password are set on Railway (ADMIN_EMAIL and
+// ADMIN_PASSWORD_HASH), so they can't be changed here.
+function OwnerForm({ owner, onCancel, onSaved }) {
+  const [f, setF] = useState({ first_name: owner?.name === "Owner" ? "" : owner?.first_name || "",
+    last_name: owner?.last_name || "" });
+  const [run, busy] = useAction();
+  const save = async () => {
+    if (await run(() => api.put("/admin/api/owner", f))) onSaved();
+  };
+  return (
+    <div className="user-form">
+      <div className="grid-2">
+        <Field label="First name"><Input value={f.first_name} autoFocus
+          onChange={(e) => setF((s) => ({ ...s, first_name: e.target.value }))} /></Field>
+        <Field label="Last name"><Input value={f.last_name}
+          onChange={(e) => setF((s) => ({ ...s, last_name: e.target.value }))} /></Field>
+      </div>
+      <p className="small muted">
+        Shown on this page, in the Home greeting and on comments. It's the same as Owner name in Business
+        details. The owner's email and password are set on Railway.
+      </p>
+      <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
+        <Button icon={X} onClick={onCancel}>Cancel</Button>
+        <Button variant="primary" icon={Save} busy={busy} disabled={!f.first_name.trim()} onClick={save}>Save</Button>
+      </div>
+    </div>
   );
 }
