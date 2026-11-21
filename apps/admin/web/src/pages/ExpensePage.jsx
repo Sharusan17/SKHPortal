@@ -13,7 +13,8 @@ const back = () => { navigate("/admin/expenses"); };
 const formOf = (x) => ({
   date: String(x.date).slice(0, 10), description: x.description, amount: String(Math.abs(Number(x.gross)).toFixed(2)),
   paid_by: x.paid_by, expense_type: x.type_set ? x.expense_type : "",
-  vat: x.vat_manual ? String(Math.abs(Number(x.vat)).toFixed(2)) : "", car_id: x.car_id ? String(x.car_id) : "", notes: x.notes,
+  // The VAT box always shows a figure: the one typed in, or the type's default.
+  vat: Math.abs(Number(x.vat_manual ? (x.vat_entered ?? x.vat) : x.default_vat) || 0).toFixed(2), car_id: x.car_id ? String(x.car_id) : "", notes: x.notes,
 });
 
 // One expense on its own page (/admin/expense/<id>). Bank lines keep the statement's date, description and amount.
@@ -59,7 +60,13 @@ export default function ExpensePage({ expenseId }) {
   const dirty = Object.keys(f).some((k) => f[k] !== base[k]);
   const typeInfo = meta.expense_types.find((t) => t.name === f.expense_type);
   const amount = Number(f.amount) || 0;
-  const defaultVat = typeInfo ? (typeInfo.vat ? amount / 6 : 0) : Math.abs(Number(x.default_vat));
+  const vatFor = (typeName) => {
+    const info = meta.expense_types.find((t) => t.name === typeName);
+    return info ? (info.vat ? Math.round((amount / 6) * 100) / 100 : 0) : Math.abs(Number(x.default_vat));
+  };
+  const defaultVat = vatFor(f.expense_type);
+  // A new type fills in its VAT straight away; typing a figure still overrides it.
+  const pickType = (v) => setF((s) => ({ ...s, expense_type: v, vat: vatFor(v).toFixed(2) }));
   const cars = stock.data ?? [];
   const bank = x.account || "Tide";
 
@@ -80,7 +87,9 @@ export default function ExpensePage({ expenseId }) {
       return;
     }
     const body = {
-      expense_type: f.expense_type, vat: f.vat === "" ? null : Number(f.vat),
+      // The type's own default goes as blank, so it stays automatic (it follows the amount and type).
+      expense_type: f.expense_type,
+      vat: f.vat === "" || Number(f.vat).toFixed(2) === defaultVat.toFixed(2) ? null : Number(f.vat),
       car_id: f.car_id ? Number(f.car_id) : null, notes: f.notes,
     };
     if (manual) Object.assign(body, { date: f.date, description: f.description, amount: Number(f.amount), paid_by: f.paid_by });
@@ -160,9 +169,11 @@ export default function ExpensePage({ expenseId }) {
               <Field label="Type">
                 <Select options={[{ value: "", label: "Pick a type…" }, ...meta.expense_types.map((t) => ({
                   value: t.name, label: t.vat || t.name.includes("no VAT") ? t.name : `${t.name} (no VAT)`,
-                }))]} value={f.expense_type} onChange={set("expense_type")} />
+                }))]} value={f.expense_type} onChange={pickType} />
               </Field>
-              <Field label="VAT" hint={`Blank uses ${money(defaultVat)}${typeInfo?.vat ? " (amount / 6)" : ""}`}>
+              <Field label="VAT" hint={x.before_vat_reg
+                ? "Before VAT registration: this VAT is kept on the expense but not reclaimed."
+                : `Default for this type: ${money(defaultVat)}${typeInfo?.vat ? " (amount / 6)" : ""}`}>
                 <MoneyInput value={f.vat} onChange={set("vat")} placeholder={defaultVat.toFixed(2)} />
               </Field>
               <Field label="Car" hint="General for business running costs">
