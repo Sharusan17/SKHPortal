@@ -2870,6 +2870,7 @@ def _expense_line(t: dict, regs: dict, vat_reg: date | None = None) -> dict:
                                                  else guess_expense_type(t["description"])),
         "type_set": bool(t.get("expense_type")), "car_id": car, "car_reg": regs.get(car),
         "paid_by": t.get("paid_by") or "Bank", "receipts": t["receipts"], "notes": t["notes"] or "",
+        "account": t.get("account") or BANK_ACCOUNTS[0],  # which bank a bank line came from
         "needs_receipt": t["category"] == EXPENSE_VAT and vat > 0 and not t["receipts"],
         "uncategorised": t["category"] == UNCATEGORISED, "vat_manual": bool(t["vat_manual"]),
         "before_vat_reg": before_reg, "refund": gross < 0,

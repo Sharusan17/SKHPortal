@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, ExternalLink, FileText, Landmark, Lock, LockOpen, Paperclip, Save, Trash2, Undo2 } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, FileText, Landmark, Lock, LockOpen, Paperclip, Save, Trash2, Undo2 } from "lucide-react";
 import {
   Alert, Badge, Button, Card, Field, Input, MoneyInput, PageHeader, Select, Textarea, useAction, useLoad, useToast,
 } from "../components/ui.jsx";
@@ -16,13 +16,15 @@ const formOf = (x) => ({
   vat: x.vat_manual ? String(Math.abs(Number(x.vat)).toFixed(2)) : "", car_id: x.car_id ? String(x.car_id) : "", notes: x.notes,
 });
 
-// One expense on its own page (/admin/expense/<id>). Bank lines keep the Tide date, description and amount.
+// One expense on its own page (/admin/expense/<id>). Bank lines keep the statement's date, description and amount.
 export default function ExpensePage({ expenseId }) {
-  const { meta, version, refresh } = useApp();
+  const { meta, period, version, refresh } = useApp();
   const toast = useToast();
   const [run, busy] = useAction();
   const load = useLoad(() => api.get(`/admin/api/expenses/${expenseId}`), [expenseId, version]);
   const stock = useLoad(() => api.get("/admin/api/stock"), [version]);
+  // The Add Expenses list for the same period, in the same order, for Previous / Next.
+  const list = useLoad(() => api.get("/admin/api/expenses", { p: period.id }), [period.id, version]);
   const [f, setF] = useState(null);
   const [unlocked, setUnlocked] = useState(false);
 
@@ -48,6 +50,18 @@ export default function ExpensePage({ expenseId }) {
   const amount = Number(f.amount) || 0;
   const defaultVat = typeInfo ? (typeInfo.vat ? amount / 6 : 0) : Math.abs(Number(x.default_vat));
   const cars = stock.data ?? [];
+  const bank = x.account || "Tide";
+
+  const lines = list.data?.lines ?? [];
+  const at = lines.findIndex((l) => l.id === x.id);
+  const prev = at > 0 ? lines[at - 1] : null;
+  const next = at >= 0 && at < lines.length - 1 ? lines[at + 1] : null;
+  const goTo = (line) => {
+    if (!line) return;
+    if (dirty && !window.confirm("You have unsaved changes on this expense. Leave without saving?")) return;
+    setUnlocked(false);
+    navigate(`/admin/expense/${line.id}`);
+  };
 
   const save = async () => {
     if (!f.expense_type) {
@@ -77,8 +91,19 @@ export default function ExpensePage({ expenseId }) {
 
   return (
     <div className="stack">
-      <div><button type="button" className="back-link" onClick={back}><ArrowLeft size={16} />Add Expenses</button></div>
-      <PageHeader title={x.description} subtitle={`${x.refund ? "Refund · " : ""}${ukDate(x.date)} · ${money(x.gross)} · ${x.paid_by === "Bank" ? "Paid from Tide" : `Paid by ${x.paid_by.toLowerCase()}`}`}
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <button type="button" className="back-link" onClick={back}><ArrowLeft size={16} />Add Expenses</button>
+        {at >= 0 && (
+          <div className="row" style={{ gap: 8, alignItems: "center" }}>
+            <span className="muted small">{`${at + 1} of ${lines.length}`}</span>
+            <Button size="sm" icon={ChevronLeft} disabled={!prev} onClick={() => goTo(prev)}
+              title={prev ? prev.description : undefined}>Previous</Button>
+            <Button size="sm" disabled={!next} onClick={() => goTo(next)}
+              title={next ? next.description : undefined}>Next<ChevronRight size={16} /></Button>
+          </div>
+        )}
+      </div>
+      <PageHeader title={x.description} subtitle={`${x.refund ? "Refund · " : ""}${ukDate(x.date)} · ${money(x.gross)} · ${x.paid_by === "Bank" ? `Paid from ${bank}` : `Paid by ${x.paid_by.toLowerCase()}`}`}
         actions={manual && <Button variant="danger" icon={Trash2} busy={busy} onClick={remove}>Delete</Button>} />
 
       <div className="grid-expenses">
@@ -89,8 +114,8 @@ export default function ExpensePage({ expenseId }) {
                 <span className="row" style={{ gap: 8 }}>
                   {unlocked ? <LockOpen size={16} /> : <Lock size={16} />}
                   {unlocked
-                    ? "Unlocked: the date, description and amount will no longer match the Tide statement."
-                    : "Date, description and amount come from the Tide import."}
+                    ? `Unlocked: the date, description and amount will no longer match the ${bank} statement.`
+                    : `Date, description and amount come from the ${bank} import.`}
                 </span>
                 <Button size="sm" icon={unlocked ? Lock : LockOpen} onClick={() => {
                   if (unlocked) setF((s) => ({ ...s, date: base.date, description: base.description, amount: base.amount }));
@@ -103,7 +128,7 @@ export default function ExpensePage({ expenseId }) {
               <Field label="Paid by">
                 {manual
                   ? <Select options={meta.paid_by.filter((p) => p !== "Bank")} value={f.paid_by} onChange={set("paid_by")} />
-                  : <Input value="Bank (Tide)" disabled />}
+                  : <Input value={`Bank (${bank})`} disabled />}
               </Field>
               <Field label="What was it" className="span-2">
                 <Input value={f.description} disabled={!editable} onChange={set("description")} />
@@ -140,7 +165,7 @@ export default function ExpensePage({ expenseId }) {
               <li><span>Linked to</span>{x.car_id
                 ? <a href={`/admin/car/${x.car_id}`}><Badge tone="blue">{x.car_reg}</Badge></a>
                 : <span className="muted">General</span>}</li>
-              <li><span>Source</span><Badge tone="gray" icon={Landmark}>{manual ? "Added by hand" : "Tide"}</Badge></li>
+              <li><span>Source</span><Badge tone="gray" icon={Landmark}>{manual ? "Added by hand" : bank}</Badge></li>
             </ul>
           </Card>
           <Receipts x={x} meta={meta} />
