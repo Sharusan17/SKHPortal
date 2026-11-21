@@ -947,8 +947,9 @@ def get_transactions_df(conn, quarter: Quarter | None = None) -> pd.DataFrame:
 
 
 def update_transactions(conn, edited: pd.DataFrame) -> int:
-    """Save category / VAT / notes edits. VAT typed by hand sticks; otherwise a category change
-    resets VAT to that category's default. Clearing the VAT cell restores the default."""
+    """Save category / VAT / notes edits, and the date and description when they were corrected.
+    VAT typed by hand sticks; otherwise a category change resets VAT to that category's default.
+    Clearing the VAT cell restores the default. A blank date or description keeps the old one."""
     changed = 0
     with conn:
         for r in edited.to_dict("records"):
@@ -968,11 +969,18 @@ def update_transactions(conn, edited: pd.DataFrame) -> int:
                 vat = default_vat(cat, amount)
             notes = text(r.get("notes"))
             car_id = cur["car_id"] if cat == cur["category"] else None
-            if (cat, money_str(vat), manual, notes) != (cur["category"], cur["vat"],
-                                                       cur["vat_manual"], cur["notes"] or ""):
+            try:
+                new_date = to_date(r.get("date")) if not _is_blank(r.get("date")) else None
+            except ValueError:
+                new_date = None
+            when = new_date.isoformat() if new_date else str(cur["date"])[:10]
+            desc = text(r.get("description")) if not _is_blank(r.get("description")) else text(cur["description"])
+            if (cat, money_str(vat), manual, notes, when, desc) != (
+                    cur["category"], cur["vat"], cur["vat_manual"], cur["notes"] or "",
+                    str(cur["date"])[:10], text(cur["description"])):
                 conn.execute("UPDATE transactions SET category = ?, vat = ?, vat_manual = ?, notes = ?, "
-                             "car_id = ? WHERE id = ?",
-                             (cat, money_str(vat), manual, notes, car_id, cur["id"]))
+                             "car_id = ?, date = ?, description = ? WHERE id = ?",
+                             (cat, money_str(vat), manual, notes, car_id, when, desc, cur["id"]))
                 if cat not in EXPENSE_CATEGORIES:  # an expense type only belongs on a cost
                     conn.execute("UPDATE transactions SET expense_type = NULL WHERE id = ?", (cur["id"],))
                 changed += 1

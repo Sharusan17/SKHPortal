@@ -106,6 +106,8 @@ class TxnEdit(BaseModel):
     category: str
     vat: float | None = None
     notes: str = ""
+    date: str | None = None         # blank keeps the date as imported
+    description: str | None = None  # blank keeps the description as imported
 
 
 class Rule(BaseModel):
@@ -620,7 +622,8 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
 
     @app.patch("/api/transactions")
     def update_transactions(edits: list[TxnEdit], conn=Depends(db)):
-        df = pd.DataFrame([e.model_dump() for e in edits], columns=["id", "category", "vat", "notes"])
+        df = pd.DataFrame([e.model_dump() for e in edits],
+                          columns=["id", "category", "vat", "notes", "date", "description"]).astype(object)
         df["vat"] = df["vat"].astype(object).where(df["vat"].notna(), None)
         n = core.update_transactions(conn, df)
         return {"message": f"Saved changes to {plural(n, 'transaction')}."}
