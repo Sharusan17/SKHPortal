@@ -181,7 +181,7 @@ def who(conn, auth: admin_auth.Auth, email: str | None) -> dict | None:
 
 
 # Pages a user sees (the rest are hidden and refused).
-USER_PAGES = ["home", "stock", "invoices", "expenses"]
+USER_PAGES = ["home", "stock", "invoices", "expenses", "flags"]
 
 # Reads a user may make. Everything else under /api/ is refused for users.
 _USER_READS = [
@@ -190,6 +190,7 @@ _USER_READS = [
     r"/api/vehicle-lookup", r"/api/documents/\d+/file", r"/api/expenses(/\d+)?",
     r"/api/transactions/\d+/receipts", r"/api/receipts/\d+/file", r"/api/invoices(/.*)?",
     r"/api/credit-notes(/.*)?", r"/api/approvals(/.*)?", r"/api/me(/.*)?",
+    r"/api/flags(/\d+)?", r"/api/people",
 ]
 _USER_READS_BLOCKED = [r"/api/cars/\d+/purchase-payment"]
 
@@ -231,6 +232,9 @@ def decide(person: dict, method: str, path: str, perms: dict[str, bool]) -> tupl
             return "allow", ""
         return "deny", "That part of the app is for admins."
     if method == "POST" and _match(_USER_LOOKUPS, path):
+        return "allow", ""
+    # Questions and answers on flags are a conversation, not a change to the books: no approval.
+    if method == "POST" and re.fullmatch(r"/api/flags/\d+/(comments|state)", path):
         return "allow", ""
     for m, pattern, area in _USER_WRITES:
         if m == method and re.fullmatch(pattern, path):

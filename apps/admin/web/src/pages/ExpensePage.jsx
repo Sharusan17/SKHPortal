@@ -134,6 +134,7 @@ export default function ExpensePage({ expenseId }) {
           <>
             <Button icon={Flag} busy={busy} onClick={toggleFlag} className={x.flagged ? "flag-on" : ""}
               aria-pressed={x.flagged}>{x.flagged ? "Flagged" : "Flag"}</Button>
+            {x.flagged && <Button onClick={() => navigate(`/admin/flag/${x.id}`)}>Comments</Button>}
             {manual && <Button variant="danger" icon={Trash2} busy={busy} onClick={remove}>Delete</Button>}
           </>
         } />

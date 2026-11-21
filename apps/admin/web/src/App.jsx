@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Building2, CalendarClock, CalendarCheck, CalendarX, CheckCircle2, Circle, Car, ArrowLeftRight,
-  ClipboardCheck, LayoutDashboard, Loader2, Wallet, ReceiptPoundSterling, ReceiptText, Search,
+  ClipboardCheck, Flag, LayoutDashboard, Loader2, Wallet, ReceiptPoundSterling, ReceiptText, Search,
   ShieldCheck, Users,
 } from "lucide-react";
 import { api } from "./api.js";
@@ -16,6 +16,8 @@ import InvoicesPage from "./pages/InvoicesPage.jsx";
 import BankPage from "./pages/BankPage.jsx";
 import ExpensesPage from "./pages/ExpensesPage.jsx";
 import ExpensePage from "./pages/ExpensePage.jsx";
+import FlagsPage from "./pages/FlagsPage.jsx";
+import FlagPage from "./pages/FlagPage.jsx";
 import CarPage from "./pages/CarPage.jsx";
 import Reminders from "./components/Reminders.jsx";
 import BusinessPage, { BusinessForm } from "./pages/BusinessPage.jsx";
@@ -28,6 +30,7 @@ const PAGES = [
   { id: "stock", label: "Stock Book", icon: Car, Component: StockPage },
   { id: "invoices", label: "Create Invoice", icon: ReceiptPoundSterling, Component: InvoicesPage },
   { id: "expenses", label: "Add Expenses", icon: Wallet, Component: ExpensesPage },
+  { id: "flags", label: "Flags", icon: Flag, Component: FlagsPage },
   { id: "bank", label: "Bank", icon: ArrowLeftRight, Component: BankPage },
   { id: "return", label: "VAT Return", icon: ReceiptText, Component: ReturnPage },
   { id: "approvals", label: "Approvals", icon: ClipboardCheck, Component: ApprovalsPage },
@@ -132,6 +135,13 @@ function Sidebar({ page, business, quarter, period, periods, setPeriodId, versio
             aria-current={page === p.id ? "page" : undefined}>
             <p.icon size={18} />
             <span>{p.id === "approvals" && !isAdmin ? "My requests" : p.label}</span>
+            {p.id === "flags" && (me.flags?.waiting > 0 || me.flags?.open > 0) && (
+              <span className={`nav-count ${me.flags.waiting > 0 ? "" : "nav-count-quiet"}`}
+                aria-label={me.flags.waiting > 0 ? `${me.flags.waiting} waiting on you` : `${me.flags.open} open`}
+                title={me.flags.waiting > 0 ? "Waiting on you" : "Open flags"}>
+                {me.flags.waiting > 0 ? me.flags.waiting : me.flags.open}
+              </span>
+            )}
             {p.id === "approvals" && me.pending_requests > 0 && (
               <span className="nav-count" aria-label={`${me.pending_requests} waiting`}>{me.pending_requests}</span>
             )}
@@ -208,7 +218,7 @@ function Dashboard() {
   useEffect(() => {
     const d = meLoad.data;
     if (d && d.user) {
-      setMe({ ...d.user, pages: d.pages, pending_requests: d.pending_requests, permissions: d.permissions });
+      setMe({ ...d.user, pages: d.pages, pending_requests: d.pending_requests, permissions: d.permissions, flags: d.flags });
     }
   }, [meLoad.data]);
   const biz = useLoad(() => api.get("/admin/api/business"), []);
@@ -295,13 +305,14 @@ function Dashboard() {
   const isAdmin = me.role === "admin";
   const carId = page.startsWith("car/") ? Number(page.slice(4)) : null;
   const expenseId = page.startsWith("expense/") ? Number(page.slice(8)) : null;
+  const flagId = page.startsWith("flag/") ? Number(page.slice(5)) : null;
   // A user who opens an admin page (an old link, a typed address) lands on Home instead.
-  const shown = carId || expenseId || allowed(me, page) ? page : DEFAULT_PAGE;
-  const Current = carId || expenseId ? null : [...PAGES, ...TOP_PAGES].find((p) => p.id === shown).Component;
+  const shown = carId || expenseId || flagId || allowed(me, page) ? page : DEFAULT_PAGE;
+  const Current = carId || expenseId || flagId ? null : [...PAGES, ...TOP_PAGES].find((p) => p.id === shown).Component;
   return (
     <AppCtx.Provider value={ctx}>
       <div className="shell">
-        <Sidebar page={carId ? "stock" : expenseId ? "expenses" : shown} business={business} quarter={quarter} period={period}
+        <Sidebar page={carId ? "stock" : expenseId ? "expenses" : flagId ? "flags" : shown} business={business} quarter={quarter} period={period}
           periods={periods} setPeriodId={setPeriodId} version={version} me={me} />
         <div className="content">
           <div className="topbar">
@@ -328,7 +339,8 @@ function Dashboard() {
           <StaleBanner />
           <main className="main">
             {carId ? <CarPage key={page} carId={carId} />
-              : expenseId ? <ExpensePage key={page} expenseId={expenseId} /> : <Current key={shown} />}
+              : expenseId ? <ExpensePage key={page} expenseId={expenseId} />
+                : flagId ? <FlagPage key={page} flagId={flagId} /> : <Current key={shown} />}
           </main>
         </div>
       </div>
