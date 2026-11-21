@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, FileText, Landmark, Lock, LockOpen, Paperclip, Save, Trash2, Undo2 } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, FileText, Flag, Landmark, Lock, LockOpen, Paperclip, Save, Trash2, Undo2 } from "lucide-react";
 import {
   Alert, Badge, Button, Card, Field, Input, MoneyInput, PageHeader, Select, Textarea, useAction, useLoad, useToast,
 } from "../components/ui.jsx";
@@ -92,6 +92,11 @@ export default function ExpensePage({ expenseId }) {
     }
   };
 
+  // Flagging saves at once and leaves anything typed but not saved alone.
+  const toggleFlag = async () => {
+    if (await run(() => api.patch(`/admin/api/expenses/${x.id}`, { flagged: !x.flagged }))) refresh();
+  };
+
   const remove = async () => {
     if (!window.confirm(`Delete "${x.description}" ${money(x.gross)}? Its receipts go too. This can't be undone.`)) return;
     if (await run(() => api.del(`/admin/api/expenses/${x.id}`))) {
@@ -116,7 +121,13 @@ export default function ExpensePage({ expenseId }) {
         )}
       </div>
       <PageHeader title={x.description} subtitle={`${x.refund ? "Refund · " : ""}${ukDate(x.date)} · ${money(x.gross)} · ${x.paid_by === "Bank" ? `Paid from ${bank}` : `Paid by ${x.paid_by.toLowerCase()}`}`}
-        actions={manual && <Button variant="danger" icon={Trash2} busy={busy} onClick={remove}>Delete</Button>} />
+        actions={
+          <>
+            <Button icon={Flag} busy={busy} onClick={toggleFlag} className={x.flagged ? "flag-on" : ""}
+              aria-pressed={x.flagged}>{x.flagged ? "Flagged" : "Flag"}</Button>
+            {manual && <Button variant="danger" icon={Trash2} busy={busy} onClick={remove}>Delete</Button>}
+          </>
+        } />
 
       <div className="grid-expenses">
         <Card title="Details">

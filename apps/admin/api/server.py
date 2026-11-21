@@ -654,7 +654,11 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
     @app.patch("/api/expenses/{txn_id}")
     def update_expense(txn_id: int, body: dict, conn=Depends(db)):
         try:
-            if set(body) <= {"expense_type", "car_id"}:  # quick edits from the list
+            if set(body) <= {"expense_type", "car_id", "flagged"}:  # quick edits from the list
+                if "flagged" in body:
+                    core.set_flag(conn, txn_id, bool(body["flagged"]))
+                    if set(body) == {"flagged"}:
+                        return {"message": "Expense flagged." if body["flagged"] else "Flag removed."}
                 if "expense_type" in body:
                     core.set_expense_type(conn, txn_id, body["expense_type"] or None)
                 if "car_id" in body:

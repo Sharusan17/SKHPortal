@@ -168,6 +168,7 @@ _MIGRATIONS = [
     ("cars", "assured_charge", "TEXT"), ("cars", "assured_charge_vat", "TEXT"),
     ("transactions", "expense_type", "TEXT"), ("transactions", "paid_by", "TEXT"),
     ("transactions", "account", "TEXT"),
+    ("transactions", "flagged", "INTEGER"),  # 1 = flagged to look at again (expenses)
 ]
 BANK_ACCOUNTS = ["Tide", "Barclays"]
 
@@ -2512,6 +2513,19 @@ def profit_and_loss(conn, period, cars: list[dict] | None = None) -> dict:
             "net_profit": car_profit - running + other, "cars_sold": len(sold)}
 
 
+def set_flag(conn, txn_id: int, flagged: bool) -> None:
+    """Flag an expense to come back to (or clear the flag). Nothing else on the line changes."""
+    with conn:
+        cur = conn.execute("UPDATE transactions SET flagged = ? WHERE id = ?", (1 if flagged else 0, txn_id))
+        if not cur.rowcount:
+            raise ValueError("Expense not found.")
+
+
+def flagged_count(conn) -> int:
+    """Expenses flagged to look at again, any date."""
+    return conn.execute("SELECT COUNT(*) AS n FROM transactions WHERE flagged = 1").fetchone()["n"]
+
+
 def home_summary(conn, today: date | None = None, period: "Period | None" = None) -> dict:
     """Everything the Home page shows: this quarter, stock, what needs doing, what's next to file.
     Sales use `period` when given (the picker's choice), else the quarter in progress."""
@@ -2571,6 +2585,7 @@ def home_summary(conn, today: date | None = None, period: "Period | None" = None
     return {
         "quarter": {"id": q.start, "label": q.label, "deadline": filing_deadline(q)},
         "vat_so_far": current.boxes[5], "output_vat": current.boxes[1], "input_vat": current.boxes[4],
+        "flagged_expenses": flagged_count(conn),
         "stock": {"count": len(in_stock), "at_cost": sum((c["bought_for"] or ZERO for c in in_stock), ZERO),
                   "paid": sum((c["paid"] or ZERO for c in in_stock), ZERO),
                   "by_stage": {s: sum(c["stage"] == s for c in in_stock) for s in CAR_STATUSES}},
@@ -2896,6 +2911,7 @@ def _expense_line(t: dict, regs: dict, vat_reg: date | None = None) -> dict:
         "type_set": bool(t.get("expense_type")), "car_id": car, "car_reg": regs.get(car),
         "paid_by": t.get("paid_by") or "Bank", "receipts": t["receipts"], "notes": t["notes"] or "",
         "account": t.get("account") or BANK_ACCOUNTS[0],  # which bank a bank line came from
+        "flagged": bool(t.get("flagged")),
         "needs_receipt": t["category"] == EXPENSE_VAT and vat > 0 and not t["receipts"],
         "uncategorised": t["category"] == UNCATEGORISED, "vat_manual": bool(t["vat_manual"]),
         "before_vat_reg": before_reg, "refund": gross < 0,
@@ -3008,6 +3024,7 @@ def expenses(conn, period) -> dict:
                    "cars": sum((x["gross"] for x in done if x["car_id"]), ZERO),
                    "general": sum((x["gross"] for x in done if not x["car_id"]), ZERO),
                    "missing_receipts": sum(x["needs_receipt"] for x in lines),
+                   "flagged": sum(x["flagged"] for x in lines),
                    "refunds": sum((-x["gross"] for x in done if x["refund"]), ZERO),
                    "uncategorised": sum(x["uncategorised"] for x in lines)},
     }
