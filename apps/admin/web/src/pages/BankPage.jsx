@@ -109,23 +109,28 @@ export default function BankPage() {
   );
 }
 
-// Text shown in full (wrapping); click it, or Tab to it and press Enter, to edit. Leaving the box
-// (or Enter / Esc) shows the text again.
-function ClickToEdit({ value, onChange, label }) {
+// A value shown as plain text (wrapping); click it, or Tab to it and press Enter, to edit. Leaving
+// the box (or Enter / Esc) shows the text again. type="date" edits with the date picker.
+function ClickToEdit({ value, onChange, label, type = "text" }) {
   const [editing, setEditing] = useState(false);
+  const done = (e) => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); setEditing(false); } };
   if (editing) {
-    return (
+    return type === "date" ? (
+      <input className="input" type="date" aria-label={label} autoFocus value={value}
+        onChange={(e) => onChange(e.target.value)} onBlur={() => setEditing(false)} onKeyDown={done} />
+    ) : (
       <textarea className="input click-edit-box" aria-label={label} autoFocus rows={2} value={value}
         onChange={(e) => onChange(e.target.value.replace(/\n/g, " "))}
-        onBlur={() => setEditing(false)}
-        onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); setEditing(false); } }} />
+        onBlur={() => setEditing(false)} onKeyDown={done} />
     );
   }
+  const shown = type === "date" ? (value ? ukDate(value) : "") : value;
   return (
-    <span className="click-edit" role="button" tabIndex={0} title="Click to edit" aria-label={`${label}: ${value || "empty"}, click to edit`}
+    <span className={`click-edit ${type === "date" ? "nowrap" : ""}`} role="button" tabIndex={0} title="Click to edit"
+      aria-label={`${label}: ${shown || "empty"}, click to edit`}
       onClick={() => setEditing(true)}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setEditing(true); } }}>
-      {value || <span className="muted">Add a description</span>}
+      {shown || <span className="muted">{type === "date" ? "Add a date" : "Add a description"}</span>}
     </span>
   );
 }
@@ -320,8 +325,8 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
                   )}
                 <tr className={isDirty(t) ? "dirty" : ""}>
                   <td style={{ width: 150 }}>
-                    <Input type="date" aria-label="Date" value={d.date}
-                      onChange={(e) => edit(t, { date: e.target.value })} />
+                    <ClickToEdit type="date" label="Date" value={d.date}
+                      onChange={(v) => edit(t, { date: v })} />
                   </td>
                   <td style={{ minWidth: 240 }}>
                     <ClickToEdit label="Description" value={d.description}

@@ -435,3 +435,4 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 .login-error { padding: 10px 12px; border-radius: 10px; background: #FEF2F2; color: #991B1B; font-size: 13px; }
 .signout { display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0; font: inherit; color: inherit; cursor: pointer; }
 .signout:hover { color: var(--ink); text-decoration: underline; }
+.click-edit.nowrap { white-space: nowrap; }
