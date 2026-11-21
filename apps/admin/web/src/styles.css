@@ -492,3 +492,7 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 .thread-ask { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: #FFF1DD; color: #9A5B00; }
 .thread-body { margin: 6px 0 0 34px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .thread-new { border-top: 1px solid var(--border); padding-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.top-count { position: absolute; top: -5px; right: -5px; min-width: 17px; height: 17px; padding: 0 4px;
+  border-radius: 999px; background: #D14343; color: #fff; font-size: 10.5px; font-weight: 600;
+  display: grid; place-items: center; line-height: 1; }
+.top-count-quiet { background: var(--muted); }

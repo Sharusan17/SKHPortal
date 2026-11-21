@@ -13,7 +13,7 @@ const VIEWS = [
   { value: "all", label: "All" },
 ];
 
-// Every flagged expense, with the latest word on each. Click one for its page and comments.
+// Every flagged expense, with the latest word on each. Click one to open the expense and its comments.
 export default function FlagsPage() {
   const { version, search } = useApp();
   const [view, setView] = useState("open");
@@ -36,10 +36,10 @@ export default function FlagsPage() {
             </p>
           )}
           {list.map((f) => (
-            <a key={f.id} href={`/admin/flag/${f.id}`} className="flag-row" onClick={(e) => {
+            <a key={f.id} href={`/admin/expense/${f.id}`} className="flag-row" onClick={(e) => {
               if (e.metaKey || e.ctrlKey) return;
               e.preventDefault();
-              navigate(`/admin/flag/${f.id}`);
+              navigate(`/admin/expense/${f.id}`);
             }}>
               <span className="flag-row-main">
                 <span className="flag-row-title">
