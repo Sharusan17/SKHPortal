@@ -249,6 +249,8 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
     def meta():
         return {
             "categories": core.CATEGORIES, "uncategorised": core.UNCATEGORISED,
+            # so a screen can fill the default VAT the moment a category is picked (see core.default_vat)
+            "vat_categories": sorted(core.VAT_CATEGORIES), "expense_categories": sorted(core.EXPENSE_CATEGORIES),
             "expense_vat": core.EXPENSE_VAT, "car_schemes": core.CAR_SCHEMES,
             "staggers": core.STAGGERS, "accounting_schemes": core.ACCOUNTING_SCHEMES,
             "box_labels": core.BOX_LABELS, "receipt_types": core.RECEIPT_TYPES,
