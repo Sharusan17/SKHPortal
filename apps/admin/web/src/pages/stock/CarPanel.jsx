@@ -326,7 +326,7 @@ function VehicleCheck({ car }) {
 // The money for one car at a glance, beside its details on the car page.
 // The money for one car at a glance. It follows the Purchase tab as you type, so the figures
 // change before saving; "Not saved" shows until Save purchase.
-//   Profit before tax = Sold for - (Purchase + Expenses + VAT due on the sale - VAT reclaimed)
+//   Total cost = Purchase + Expenses - VAT reclaimed; Profit before tax = Sold for - Total cost - VAT due
 const num = (v) => Number(String(v ?? "").replace(/[£,\s]/g, "")) || 0;
 const marginVat = (scheme, price, fee, feeVat, sale) => {
   if (scheme !== "Margin") return sale / 6;
@@ -376,9 +376,14 @@ function CarSummary({ car, form }) {
           value={money(purchase)} />}
         <Line label={<>Expenses {expensesVat > 0 && <span className="vat-tag">incl. VAT</span>}</>}
           value={money(expenses)} />
+        <Line label="VAT reclaimed" value={reclaimed ? `-${money(reclaimed)}` : money(0)} />
+        {hasPrice && (
+          <div className="summary-subtotal">
+            <Line label="Total cost" value={money(purchase + expenses - reclaimed)} strong />
+          </div>
+        )}
         {sold != null && <Line label="Sold for" value={money(sold)} />}
         {vatDue != null && sold != null && <Line label="VAT due on the sale" value={money(vatDue)} />}
-        <Line label="VAT reclaimed" value={money(reclaimed)} />
         {profit != null && (
           <div className="summary-profit">
             <Line label="Profit before tax" value={money(profit)} strong tone={signTone(profit)} />
