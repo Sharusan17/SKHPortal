@@ -109,6 +109,27 @@ export default function BankPage() {
   );
 }
 
+// Text shown in full (wrapping); click it, or Tab to it and press Enter, to edit. Leaving the box
+// (or Enter / Esc) shows the text again.
+function ClickToEdit({ value, onChange, label }) {
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return (
+      <textarea className="input click-edit-box" aria-label={label} autoFocus rows={2} value={value}
+        onChange={(e) => onChange(e.target.value.replace(/\n/g, " "))}
+        onBlur={() => setEditing(false)}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === "Escape") { e.preventDefault(); setEditing(false); } }} />
+    );
+  }
+  return (
+    <span className="click-edit" role="button" tabIndex={0} title="Click to edit" aria-label={`${label}: ${value || "empty"}, click to edit`}
+      onClick={() => setEditing(true)}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setEditing(true); } }}>
+      {value || <span className="muted">Add a description</span>}
+    </span>
+  );
+}
+
 // Collapsible that stays mounted when closed, so unsaved edits inside it survive.
 function KeepOpen({ title, icon: IconC, children }) {
   const [open, setOpen] = useState(false);
@@ -149,6 +170,15 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
   const dirty = txns.filter(isDirty);
   const edit = (t, patch) => setDrafts((d) => ({ ...d, [t.id]: { ...(d[t.id] ?? baseOf(t)), ...patch } }));
 
+  // The VAT a category gives by default, the same rule the server uses: 1/6 of the gross for a
+  // with-VAT category (money out counts as positive for expenses), otherwise 0.00.
+  const defaultVat = (category, amount) => {
+    if (!(meta.vat_categories || []).includes(category)) return "0.00";
+    const gross = (meta.expense_categories || []).includes(category) ? -Number(amount) : Number(amount);
+    return (Math.round((gross / 6) * 100) / 100).toFixed(2);
+  };
+  const pickCategory = (t, category) => edit(t, { category, vat: defaultVat(category, t.amount) });
+
   const done = prog ? prog.categorised : txns.filter((t) => t.category !== meta.uncategorised).length;
   const total = prog ? prog.total : txns.length;
   const term = String(search ?? "").trim().toLowerCase();
@@ -181,8 +211,11 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
   const save = async () => {
     const body = dirty.map((t) => {
       const d = drafts[t.id];
+      // VAT left at the category's default goes as blank, so the server keeps it as the default
+      // (and not as a figure typed by hand).
+      const vat = d.category !== t.category && d.vat === defaultVat(d.category, t.amount) ? null : vatValue(d.vat);
       return {
-        id: t.id, category: d.category, vat: vatValue(d.vat), notes: d.notes,
+        id: t.id, category: d.category, vat, notes: d.notes,
         date: d.date || null, description: d.description.trim() || null,
       };
     });
@@ -291,15 +324,15 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
                       onChange={(e) => edit(t, { date: e.target.value })} />
                   </td>
                   <td style={{ minWidth: 240 }}>
-                    <Input aria-label="Description" value={d.description} title={d.description}
-                      onChange={(e) => edit(t, { description: e.target.value })} />
+                    <ClickToEdit label="Description" value={d.description}
+                      onChange={(v) => edit(t, { description: v })} />
                   </td>
-                  <td className="r" style={{ color: Number(t.amount) > 0 ? "var(--green)" : undefined }}>
+                  <td className="r" style={{ whiteSpace: "nowrap", color: Number(t.amount) > 0 ? "var(--green)" : undefined }}>
                     {money(t.amount)}
                   </td>
                   <td style={{ minWidth: 220 }}>
                     <Select aria-label="Category" options={meta.categories} value={d.category}
-                      onChange={(v) => edit(t, { category: v })} />
+                      onChange={(v) => pickCategory(t, v)} />
                   </td>
                   <td className="r" style={{ width: 120 }}>
                     <input className="input" type="number" step="0.01" inputMode="decimal" aria-label="VAT"
