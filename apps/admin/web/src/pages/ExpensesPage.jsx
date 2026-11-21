@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Car, Check, ExternalLink, FileText, Paperclip, Plus, Receipt, Trash2, Wallet, Building2, PiggyBank, X } from "lucide-react";
+import { Car, Check, ExternalLink, FileText, Flag, Paperclip, Plus, Receipt, Trash2, Wallet, Building2, PiggyBank, X } from "lucide-react";
 import {
   Alert, Button, Card, Field, Input, MoneyInput, PageHeader, Segmented, Select, StatCard,
   useAction, useLoad, useToast,
@@ -15,13 +15,19 @@ const FILTERS = [
   { value: "general", label: "General" },
   { value: "receipt", label: "Missing receipt" },
   { value: "untyped", label: "To sort" },
+  { value: "flagged", label: "Flagged" },
 ];
+// /admin/expenses?filter=flagged (from the Home page) opens on that filter.
+const startFilter = () => {
+  const f = new URLSearchParams(window.location.search).get("filter");
+  return FILTERS.some((x) => x.value === f) ? f : "all";
+};
 
 const today = () => new Date().toISOString().slice(0, 10);
 
 export default function ExpensesPage() {
   const { meta, period, version, refresh, search } = useApp();
-  const [filter, setFilter] = useState("all");
+  const [filter, setFilter] = useState(startFilter);
   const [adding, setAdding] = useState(false);
   const load = useLoad(() => api.get("/admin/api/expenses", { p: period.id }), [period.id, version]);
   const stock = useLoad(() => api.get("/admin/api/stock"), [version]);
@@ -37,7 +43,8 @@ export default function ExpensesPage() {
       || (filter === "car" && x.car_id)
       || (filter === "general" && !x.car_id && !x.uncategorised)
       || (filter === "receipt" && x.needs_receipt)
-      || (filter === "untyped" && (x.uncategorised || !x.type_set)))
+      || (filter === "untyped" && (x.uncategorised || !x.type_set))
+      || (filter === "flagged" && x.flagged))
     && (!term || `${x.description} ${x.car_reg ?? ""} ${x.notes}`.toLowerCase().includes(term))
   ));
 
@@ -69,7 +76,8 @@ export default function ExpensesPage() {
           <div className="row" style={{ justifyContent: "space-between", marginBottom: 12 }}>
             <Segmented options={FILTERS.map((f) => ({
               ...f,
-              label: f.value === "receipt" && totals.missing_receipts ? `${f.label} (${totals.missing_receipts})` : f.label,
+              label: f.value === "receipt" && totals.missing_receipts ? `${f.label} (${totals.missing_receipts})`
+                : f.value === "flagged" && totals.flagged ? `${f.label} (${totals.flagged})` : f.label,
             }))} value={filter} onChange={setFilter} ariaLabel="Filter expenses" />
           </div>
           <ExpenseTable lines={view} meta={meta} cars={cars} empty={lines.length === 0
@@ -137,11 +145,12 @@ function ExpenseTable({ lines, meta, cars, empty }) {
         <tbody>
           {lines.length === 0 && <tr><td colSpan={8} className="muted">{empty}</td></tr>}
           {lines.map((x) => (
-            <tr key={x.id} className="click-row" onClick={(e) => {
+            <tr key={x.id} className={`click-row ${x.flagged ? "is-flagged" : ""}`} onClick={(e) => {
               if (!e.target.closest("select, button, a, label, input")) navigate(`/admin/expense/${x.id}`);
             }}>
               <td style={{ whiteSpace: "nowrap" }}>{ukDate(x.date)}</td>
               <td style={{ minWidth: 180 }}>
+                {x.flagged && <Flag size={14} className="flag-icon" aria-label="Flagged" />}
                 <a className="row-link" href={`/admin/expense/${x.id}`}>{x.description}</a>
                 {x.refund && <span className="refund-tag">Refund</span>}
                 {x.paid_by !== "Bank" && <span className="muted small">{x.paid_by}</span>}
@@ -174,7 +183,12 @@ function ExpenseTable({ lines, meta, cars, empty }) {
                     </label>
                   )}
               </td>
-              <td className="r">
+              <td className="r" style={{ whiteSpace: "nowrap" }}>
+                <button type="button" className={`icon-btn ${x.flagged ? "flag-on" : ""}`} disabled={busy}
+                  aria-label={x.flagged ? "Remove flag" : "Flag this expense"} title={x.flagged ? "Remove flag" : "Flag"}
+                  aria-pressed={x.flagged} onClick={() => patch(x, { flagged: !x.flagged })}>
+                  <Flag size={16} />
+                </button>
                 {x.paid_by !== "Bank" && (
                   <button type="button" className="icon-btn" aria-label="Delete expense" disabled={busy}
                     onClick={() => remove(x)}><Trash2 size={16} /></button>

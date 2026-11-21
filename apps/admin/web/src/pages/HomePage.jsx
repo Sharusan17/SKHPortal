@@ -1,6 +1,6 @@
 import {
   ArrowLeftRight, Banknote, Car, CheckCircle2, Circle, FileText, FileWarning, Gavel,
-  CalendarClock, Package, Receipt, TrendingUp, Upload, Wrench,
+  CalendarClock, Flag, Package, Receipt, TrendingUp, Upload, Wrench,
 } from "lucide-react";
 import {
   Alert, Badge, Button, Empty, InkCard, ListRow, PageHeader, Panel, Progress, StatCard, useLoad,
@@ -152,6 +152,14 @@ export default function HomePage() {
         </div>
 
         {home.error && <Alert tone="error" title="Showing the last loaded figures">{home.error.message}</Alert>}
+
+        {d.flagged_expenses > 0 && (
+          <a href="/admin/expenses?filter=flagged" className="flag-banner">
+            <Flag size={16} />
+            <span>{`${plural(d.flagged_expenses, "expense")} flagged to look at`}</span>
+            <span className="flag-banner-go">Review</span>
+          </a>
+        )}
 
         {/* Summary row: the only coloured boxes on the page, all the same height. */}
         <div className="hp-top">
