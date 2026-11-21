@@ -326,7 +326,7 @@ function VehicleCheck({ car }) {
 // The money for one car at a glance, beside its details on the car page.
 // The money for one car at a glance. It follows the Purchase tab as you type, so the figures
 // change before saving; "Not saved" shows until Save purchase.
-//   Profit before tax = Sold for - (Purchase + Expenses + VAT due on the sale - VAT reclaimed)
+//   Total cost = Purchase + Expenses - VAT reclaimed; Profit before tax = Sold for - Total cost - VAT due
 const num = (v) => Number(String(v ?? "").replace(/[£,\s]/g, "")) || 0;
 const marginVat = (scheme, price, fee, feeVat, sale) => {
   if (scheme !== "Margin") return sale / 6;
