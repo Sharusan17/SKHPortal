@@ -2220,11 +2220,17 @@ def invoice_payments(conn, invoice_id: int) -> list[dict]:
     return [{**dict(r), "paid_on": to_date(r["paid_on"]), "amount": dec(r["amount"])} for r in rows]
 
 
-def payment_status(conn, inv: dict) -> dict:
-    """Paid so far (a deposit on the invoice counts) against what's due."""
+def payment_status(conn, inv: dict, payments: list[dict] | None = None,
+                   credits: list[dict] | None = None) -> dict:
+    """Paid so far (a deposit on the invoice counts) against what's due. `payments` and `credits`
+    (this invoice's) can be passed in when already loaded, to save two queries per invoice."""
+    if payments is None:
+        payments = invoice_payments(conn, inv["id"])
+    if credits is None:
+        credits = list_credit_notes(conn, inv["id"])
     paid = pence(Decimal(str(inv["pricing"].get("deposit") or 0))) + sum(
-        (p["amount"] for p in invoice_payments(conn, inv["id"])), ZERO)
-    credited = sum((cn["amount"] for cn in list_credit_notes(conn, inv["id"])), ZERO)
+        (p["amount"] for p in payments), ZERO)
+    credited = sum((cn["amount"] for cn in credits), ZERO)
     due = invoice_due(inv) - credited
     if inv["void"]:
         status = "void"
@@ -2392,12 +2398,18 @@ def car_paperwork(conn, car_id: int) -> dict:
     return {"receipts": receipts, "invoices": invoices, "credit_notes": notes}
 
 
-def car_costs(conn, car_id: int) -> list[dict]:
-    rows = conn.execute("SELECT t.*, (SELECT COUNT(*) FROM receipts r WHERE r.txn_id = t.id) AS receipts "
-                        "FROM transactions t WHERE t.car_id = ? AND t.category IN (?, ?, ?) "
-                        "ORDER BY t.date, t.id", (car_id, EXPENSE_VAT, EXPENSE_NO_VAT, UNCATEGORISED))
+_COST_SQL = ("SELECT t.*, (SELECT COUNT(*) FROM receipts r WHERE r.txn_id = t.id) AS receipts "
+             "FROM transactions t WHERE t.car_id IS NOT NULL AND t.category IN (?, ?, ?)")
+
+
+def car_costs(conn, car_id: int, rows=None, reg: "date | None | bool" = False) -> list[dict]:
+    """A car's linked costs. `rows` (its transactions) and `reg` (the VAT registration date) can be
+    passed in when the stock book has already loaded them for every car."""
+    if rows is None:
+        rows = conn.execute(_COST_SQL + " AND t.car_id = ? ORDER BY t.date, t.id",
+                            (EXPENSE_VAT, EXPENSE_NO_VAT, UNCATEGORISED, car_id))
     out = []
-    reg = vat_reg_date(conn)
+    reg = vat_reg_date(conn) if reg is False else reg
     for r in rows:
         gross = -dec(r["amount"])
         vat = dec(r["vat"]) if r["category"] == EXPENSE_VAT and vat_counts(reg, to_date(r["date"])) else ZERO
@@ -2480,15 +2492,26 @@ def car_overview(conn, today: date | None = None) -> list[dict]:
         "SELECT car_id, COUNT(*) AS n FROM car_documents GROUP BY car_id")}
     out = []
     reg = vat_reg_date(conn)
+    # Every car's costs, every invoice's payments and credit notes, each in one query rather
+    # than a few queries per car (each is a round trip to the database).
+    cost_rows: dict[int, list] = {}
+    for r in conn.execute(_COST_SQL + " ORDER BY t.date, t.id", (EXPENSE_VAT, EXPENSE_NO_VAT, UNCATEGORISED)):
+        cost_rows.setdefault(r["car_id"], []).append(r)
+    pays: dict[int, list] = {}
+    for r in conn.execute("SELECT * FROM invoice_payments ORDER BY paid_on, id"):
+        pays.setdefault(r["invoice_id"], []).append({**dict(r), "paid_on": to_date(r["paid_on"]), "amount": dec(r["amount"])})
+    credits_by_inv: dict[int, list] = {}
+    for cn in credits:
+        credits_by_inv.setdefault(cn["invoice_id"], []).append(cn)
     for c in list_cars(conn):
         # VAT on the purchase is only reclaimed if the car was still held on the registration date.
         if c["sale_date"] and not vat_counts(reg, c["sale_date"]):
             c = {**c, "purchase_vat": None, "buyer_fee_vat": None, "assured_charge_vat": None}
         fee, fee_vat = c.get("buyer_fee") or ZERO, c.get("buyer_fee_vat") or ZERO
         ac, ac_vat = c.get("assured_charge") or ZERO, c.get("assured_charge_vat") or ZERO
-        costs = car_costs(conn, c["id"])
+        costs = car_costs(conn, c["id"], cost_rows.get(c["id"], []), reg)
         inv = invoices.get(c["id"])
-        pay = payment_status(conn, inv) if inv else None
+        pay = payment_status(conn, inv, pays.get(inv["id"], []), credits_by_inv.get(inv["id"], [])) if inv else None
         if c["sale_date"]:
             stage = "completed" if pay and pay["status"] == "paid" else "sold"
         else:

@@ -217,6 +217,16 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         return fwd.split(",")[0].strip() or (request.client.host if request.client else "unknown")
 
     @app.middleware("http")
+    async def log_slow(request: Request, call_next):
+        """Write any request slower than half a second to the log (Railway: the service's Logs)."""
+        t = time.perf_counter()
+        response = await call_next(request)
+        ms = (time.perf_counter() - t) * 1000
+        if ms > 500:
+            print(f"slow request: {request.method} {local_path(request)} took {ms:.0f} ms", flush=True)
+        return response
+
+    @app.middleware("http")
     async def require_login(request: Request, call_next):
         """Signed in, and allowed: admins do anything; a user's changes are held for approval."""
         path = local_path(request)
