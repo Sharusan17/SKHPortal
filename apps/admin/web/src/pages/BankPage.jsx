@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle, ArrowDown, ArrowDownLeft, ArrowUp, ArrowUpRight, CheckCircle2, ChevronDown, Download,
   FileText, ListChecks, ListPlus, Link, Plus, Save, Sparkles, SlidersHorizontal,
@@ -16,6 +16,12 @@ const ROLES = [
   ["date", "Date"], ["description", "Description"], ["paid_in", "Paid in"], ["paid_out", "Paid out"],
 ];
 const EMPTY_MAP = Object.fromEntries(ROLES.map(([role]) => [role, null]));
+
+// "2026-08-24" -> "August 2026", for the divider row between months.
+const monthLabel = (d) => {
+  const [y, m] = String(d ?? "").slice(0, 7).split("-").map(Number);
+  return y && m ? new Date(y, m - 1, 1).toLocaleDateString("en-GB", { month: "long", year: "numeric" }) : "";
+};
 
 // VAT text box -> number, or null for blank (= restore the default). NaN if not a number.
 const vatValue = (s) => (String(s ?? "").trim() === "" ? null : Number(s));
@@ -129,11 +135,16 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
     return <Alert tone="info">No bank transactions in {quarter.label}. Import a Tide CSV or Barclays PDF in the Import statement tab.</Alert>;
   }
 
-  const baseOf = (t) => ({ category: t.category, vat: Number(t.vat).toFixed(2), notes: t.notes ?? "" });
+  const baseOf = (t) => ({
+    category: t.category, vat: Number(t.vat).toFixed(2), notes: t.notes ?? "",
+    date: String(t.date ?? "").slice(0, 10), description: t.description ?? "",
+  });
   const current = (t) => drafts[t.id] ?? baseOf(t);
   const isDirty = (t) => {
     const d = drafts[t.id];
-    return !!d && (d.category !== t.category || vatValue(d.vat) !== Number(t.vat) || d.notes !== (t.notes ?? ""));
+    const b = baseOf(t);
+    return !!d && (d.category !== t.category || vatValue(d.vat) !== Number(t.vat) || d.notes !== b.notes
+      || d.date !== b.date || d.description !== b.description);
   };
   const dirty = txns.filter(isDirty);
   const edit = (t, patch) => setDrafts((d) => ({ ...d, [t.id]: { ...(d[t.id] ?? baseOf(t)), ...patch } }));
@@ -146,8 +157,9 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
     && (!term || String(t.description ?? "").toLowerCase().includes(term)));
 
   const openInvoices = invoices.filter(isOpenInvoice);
+  // Not linked to anything means a general business line; pick a car or invoice to link it.
   const carOptions = [
-    { value: "", label: "Link to car…" },
+    { value: "", label: "General" },
     ...cars.map((c) => ({ value: String(c.id), label: [c.stock_no, c.reg, c.make_model].filter(Boolean).join(" · ") })),
   ];
   // After a credit note, money paid back to the buyer is matched to the invoice as a refund.
@@ -159,7 +171,7 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
     })),
   ];
   const invoiceOptions = [
-    { value: "", label: "Pay invoice…" },
+    { value: "", label: "General" },
     ...openInvoices.map((i) => ({
       value: String(i.id),
       label: `${i.invoice_no} · ${i.reg ?? ""} · ${i.buyer_name ?? ""} · ${money(i.payment?.outstanding)} due`,
@@ -169,7 +181,10 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
   const save = async () => {
     const body = dirty.map((t) => {
       const d = drafts[t.id];
-      return { id: t.id, category: d.category, vat: vatValue(d.vat), notes: d.notes };
+      return {
+        id: t.id, category: d.category, vat: vatValue(d.vat), notes: d.notes,
+        date: d.date || null, description: d.description.trim() || null,
+      };
     });
     if (body.some((b) => Number.isNaN(b.vat))) {
       toast("error", "VAT must be a number, or blank to restore the default.");
@@ -218,7 +233,7 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
           openInvoices.length > 0 ? (
             <Select aria-label="Pay invoice" options={invoiceOptions} value="" disabled={busy}
               onChange={(v) => v && payInvoice(t, Number(v))} />
-          ) : <span className="muted small">No open invoices</span>
+          ) : <span className="muted small">General</span>
         ) : (
           <>
             <Select aria-label="Link to car" options={carOptions} value="" disabled={busy}
@@ -259,18 +274,25 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
                 {term && !onlyUncat ? `Nothing matches "${search}".` : "Everything is categorised."}
               </td></tr>
             )}
-            {view.map((t) => {
+            {view.map((t, i) => {
               const d = current(t);
+              const month = String(t.date ?? "").slice(0, 7);
+              const newMonth = i === 0 || month !== String(view[i - 1].date ?? "").slice(0, 7);
               return (
-                <tr key={t.id} className={isDirty(t) ? "dirty" : ""}>
-                  <td style={{ whiteSpace: "nowrap" }}>{ukDate(t.date)}</td>
-                  <td>
-                    {t.description}
-                    {t.account && (
-                      <span style={{ marginLeft: 6 }}>
-                        <Badge tone={t.account === "Barclays" ? "blue" : "gray"}>{t.account}</Badge>
-                      </span>
-                    )}
+                <Fragment key={t.id}>
+                  {newMonth && (
+                    <tr className="month-row">
+                      <td colSpan={7}>{monthLabel(t.date)}</td>
+                    </tr>
+                  )}
+                <tr className={isDirty(t) ? "dirty" : ""}>
+                  <td style={{ width: 150 }}>
+                    <Input type="date" aria-label="Date" value={d.date}
+                      onChange={(e) => edit(t, { date: e.target.value })} />
+                  </td>
+                  <td style={{ minWidth: 240 }}>
+                    <Input aria-label="Description" value={d.description} title={d.description}
+                      onChange={(e) => edit(t, { description: e.target.value })} />
                   </td>
                   <td className="r" style={{ color: Number(t.amount) > 0 ? "var(--green)" : undefined }}>
                     {money(t.amount)}
@@ -290,6 +312,7 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
                   </td>
                   <td style={{ minWidth: 200 }}>{linkCell(t)}</td>
                 </tr>
+                </Fragment>
               );
             })}
           </tbody>

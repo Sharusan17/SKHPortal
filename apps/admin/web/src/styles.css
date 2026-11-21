@@ -229,6 +229,9 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .table tbody tr:hover { background: #FAFAFA; }
 .table .r { text-align: right; font-variant-numeric: tabular-nums; }
 .table td .input { height: 34px; padding: 0 10px; font-size: 13px; min-width: 96px; }
+.table tr.month-row td { height: 30px; padding: 14px 12px 6px; font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--muted); background: transparent; border-bottom: 1px solid var(--border); }
+.table tbody tr.month-row:first-child td { padding-top: 6px; }
 .table tr.dirty { background: #FFF9E8; }
 .table tr.dirty:hover { background: #FFF3D1; }
 
