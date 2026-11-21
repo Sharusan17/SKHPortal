@@ -149,7 +149,7 @@ export default function CarPanel({ car, onClose, page = false }) {
                 <Field label="Buyer's fee">
                   <MoneyInput value={form.buyer_fee} onChange={put("buyer_fee")} />
                 </Field>
-                <Field label="VAT shown on the buyer's fee">
+                <Field label="VAT shown on the Buyer's fee">
                   <MoneyInput value={form.buyer_fee_vat} onChange={put("buyer_fee_vat")} />
                 </Field>
               </div>
@@ -229,7 +229,7 @@ export default function CarPanel({ car, onClose, page = false }) {
         </div>
         <div className="car-page">
           <div className="stack" style={{ minWidth: 0 }}>{sections}</div>
-          <CarSummary car={car} />
+          <CarSummary car={car} form={form} />
         </div>
         <style>{`
           .car-page { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 20px; align-items: start; }
@@ -324,27 +324,72 @@ function VehicleCheck({ car }) {
 }
 
 // The money for one car at a glance, beside its details on the car page.
-function CarSummary({ car }) {
-  // [label, value, colour]: money coming in green, money going out red.
-  const rows = [
-    ["Paid, incl. VAT", car.paid, "out"],
-    ["Bought for, after VAT reclaimed", car.bought_for, "out"],
-    ["Assured charges", car.assured_charge, "out"],
-    ["Prep and repair costs", car.costs_net, "out"],
-    ["Sold for", car.sale_price, "in"],
-    ["VAT due on the sale", car.vat_due, "out"],
-  ].filter(([, v]) => v !== null && v !== undefined);
+// The money for one car at a glance. It follows the Purchase tab as you type, so the figures
+// change before saving; "Not saved" shows until Save purchase.
+//   Profit before tax = Sold for - (Purchase + Expenses + VAT due on the sale - VAT reclaimed)
+const num = (v) => Number(String(v ?? "").replace(/[£,\s]/g, "")) || 0;
+const marginVat = (scheme, price, fee, feeVat, sale) => {
+  if (scheme !== "Margin") return sale / 6;
+  const margin = sale - price - (fee && !feeVat ? fee : 0); // a fee with no VAT joins the margin
+  return margin > 0 ? margin / 6 : 0;
+};
+
+function CarSummary({ car, form }) {
+  const f = form || {};
+  const std = (f.scheme || car.scheme) === "Standard";
+  const live = {
+    price: num(f.purchase_price), fee: num(f.buyer_fee), feeVat: num(f.buyer_fee_vat),
+    ac: num(f.assured_charge), acVat: num(f.assured_charge_vat), pVat: std ? num(f.purchase_vat) : 0,
+  };
+  const saved = {
+    price: num(car.purchase_price), fee: num(car.buyer_fee), feeVat: num(car.buyer_fee_vat),
+    ac: num(car.assured_charge), acVat: num(car.assured_charge_vat),
+    pVat: car.scheme === "Standard" ? num(car.purchase_vat) : 0,
+  };
+  const changed = form && (Object.keys(live).some((k) => Math.abs(live[k] - saved[k]) > 0.004)
+    || (f.scheme && f.scheme !== car.scheme));
+  const hasPrice = String(f.purchase_price ?? car.purchase_price ?? "") !== "";
+
+  const purchase = live.price + live.fee + live.ac;
+  const purchaseVat = live.pVat + live.feeVat + live.acVat;
+  const costs = car.costs || [];
+  const expenses = costs.reduce((a, c) => a + Number(c.net) + Number(c.vat), 0);
+  const expensesVat = costs.reduce((a, c) => a + Number(c.vat), 0);
+  const reclaimed = purchaseVat + expensesVat;
+  const sold = car.takings ?? car.sale_price;
+  // VAT due follows the saved figure (it already allows for credit notes and the registration
+  // date), moved by however much the typed purchase changes the margin.
+  let vatDue = car.vat_due;
+  if (vatDue != null && Number(vatDue) !== 0 && sold != null) {
+    vatDue = Number(vatDue)
+      + marginVat(f.scheme || car.scheme, live.price, live.fee, live.feeVat, Number(car.sale_price))
+      - marginVat(car.scheme, saved.price, saved.fee, saved.feeVat, Number(car.sale_price));
+  }
+  const profit = sold != null && hasPrice
+    ? Number(sold) - (purchase + expenses + Number(vatDue || 0) - reclaimed) : null;
+
   return (
     <Card title="Summary">
       <div className="stack-sm">
-        {rows.map(([label, v, tone]) => <Line key={label} label={label} value={money(v)} tone={Number(v) ? tone : undefined} />)}
-        {car.profit != null && <Line label="Profit before tax" value={money(car.profit)} strong tone={signTone(car.profit)} />}
+        {changed && <div className="unsaved-note">Not saved: showing what you've typed</div>}
+        {hasPrice && <Line label={<>Purchase {purchaseVat > 0 && <span className="vat-tag">incl. VAT</span>}</>}
+          value={money(purchase)} />}
+        <Line label={<>Expenses {expensesVat > 0 && <span className="vat-tag">incl. VAT</span>}</>}
+          value={money(expenses)} />
+        {sold != null && <Line label="Sold for" value={money(sold)} />}
+        {vatDue != null && sold != null && <Line label="VAT due on the sale" value={money(vatDue)} />}
+        <Line label="VAT reclaimed" value={money(reclaimed)} />
+        {profit != null && (
+          <div className="summary-profit">
+            <Line label="Profit before tax" value={money(profit)} strong tone={signTone(profit)} />
+          </div>
+        )}
         <Line label="Days in stock" value={car.days_in_stock ?? 0} />
         {car.invoice && <Line label={`Invoice ${car.invoice.invoice_no}`} value={car.invoice.status === "paid"
-          ? "Paid" : `${money(car.invoice.outstanding)} to come`} tone={car.invoice.status === "paid" ? "in" : undefined} />}
+          ? "Paid" : `${money(car.invoice.outstanding)} to come`} />}
         {(car.credit_notes || []).map((n) => (
           <Line key={n.credit_no} label={`${n.credit_no} · ${n.kind_label} (invoice ${n.invoice_no})`}
-            value={`-${money(n.amount)}`} tone="out" />
+            value={`-${money(n.amount)}`} />
         ))}
       </div>
     </Card>
@@ -363,7 +408,8 @@ const drawer = {
 // ---------------------------------------------------------------- costs
 
 // Green for a positive amount, red for a negative one.
-const amountColour = (v) => (Number(v) > 0 ? "var(--green)" : Number(v) < 0 ? "var(--red)" : undefined);
+// A cost (money out) is red; a refund (money back) is green.
+const amountColour = (v) => (Number(v) > 0 ? "var(--red)" : Number(v) < 0 ? "var(--green)" : undefined);
 
 function CostsSection({ car }) {
   const { version, refresh } = useApp();
@@ -414,14 +460,14 @@ function CostsSection({ car }) {
                   </span>
                 )}
               </span>
-              <span className="list-value" style={{ color: amountColour(c.net), fontWeight: 600 }}>{money(c.net)} net</span>
+              <span className="list-value" style={{ color: amountColour(c.net), fontWeight: 600 }}>{money(c.net)}</span>
               <IconButton icon={X} label={`Unlink ${c.description}`} disabled={linking}
                 onClick={() => link(c.id, null)} />
             </div>
           ))}
           {costs.length > 0 && (
             <div className="row" style={{ justifyContent: "flex-end", gap: 8 }}>
-              <span className="small muted">Total net</span>
+              <span className="small muted">Total</span>
               <strong style={{ color: amountColour(car.costs_net) }}>{money(car.costs_net)}</strong>
             </div>
           )}
@@ -597,7 +643,9 @@ function Line({ label, value, strong = false, tone }) {
 // pick one here when it wasn't, or to change it.
 function PurchasePayment({ car }) {
   const { version, refresh } = useApp();
-  const txns = useLoad(() => api.get("/admin/api/transactions", { p: "all" }), [version]);
+  const [editing, setEditing] = useState(false);
+  const txns = useLoad(() => (editing ? api.get("/admin/api/transactions", { p: "all" }) : Promise.resolve(null)),
+    [version, editing]);
   const [pick, setPick] = useState("");
   const [act, busy] = useAction();
   const linked = car.purchase_payments || [];
@@ -612,33 +660,51 @@ function PurchasePayment({ car }) {
     .sort((a, b) => Math.abs(-Number(a.amount) - target) - Math.abs(-Number(b.amount) - target))
     .map((t) => ({ value: String(t.id), label: `${ukDate(t.date)} · ${t.description} · ${money(-t.amount)}` }));
 
+  if (!editing) {
+    return (
+      <button type="button" className="purchase-pay is-closed" onClick={() => setEditing(true)}
+        title="Click to add or remove the bank payment">
+        <span className="row" style={{ justifyContent: "space-between", alignItems: "baseline", width: "100%" }}>
+          <strong>Purchase payment</strong>
+          {linked.length > 0 ? <Badge tone="green">Bill paid</Badge> : <Badge tone="orange">Not linked</Badge>}
+        </span>
+        {linked.length === 0 && <span className="small muted">No bank payment linked. Click to link one.</span>}
+        {linked.map((t) => (
+          <span key={t.id} className="row" style={{ justifyContent: "space-between", width: "100%", gap: 12 }}>
+            <span className="list-text" style={{ textAlign: "left" }}>
+              <span className="list-title">{t.description}</span>
+              <span className="list-sub">{ukDate(t.date)}</span>
+            </span>
+            <strong className="num">{money(-t.amount)}</strong>
+          </span>
+        ))}
+      </button>
+    );
+  }
+
   return (
     <div className="purchase-pay">
       <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
         <strong>Purchase payment</strong>
-        {linked.length > 0 ? <Badge tone="green">Bill paid</Badge> : <Badge tone="orange">Not linked</Badge>}
+        <Button size="sm" onClick={() => setEditing(false)}>Done</Button>
       </div>
       {linked.map((t) => (
         <div key={t.id} className="list-row" style={{ alignItems: "center" }}>
           <span className="list-text">
             <span className="list-title">{t.description}</span>
-            <span className="list-sub">{ukDate(t.date)} · bank payment</span>
+            <span className="list-sub">{ukDate(t.date)}</span>
           </span>
-          <span className="list-value" style={{ color: "var(--red)" }}>{money(-t.amount)}</span>
-          <IconButton icon={X} label={`Unlink ${t.description}`} disabled={busy} onClick={() => send(t.id, false)} />
+          <span className="list-value">{money(-t.amount)}</span>
+          <Button size="sm" variant="ghost" icon={X} disabled={busy} onClick={() => send(t.id, false)}>Remove</Button>
         </div>
       ))}
       <div className="row" style={{ gap: 8, alignItems: "stretch" }}>
         <div style={{ flex: "1 1 260px", minWidth: 0 }}>
           <Select value={pick} onChange={setPick} aria-label="Bank payment for the purchase"
-            options={[{ value: "", label: linked.length ? "Add another bank payment…" : "Link the bank payment…" }, ...options]} />
+            options={[{ value: "", label: txns.loading ? "Loading…" : linked.length ? "Add another bank payment…" : "Link the bank payment…" }, ...options]} />
         </div>
-        <Button icon={Link2} disabled={!pick} busy={busy} onClick={() => send(Number(pick), true)}>Link</Button>
+        <Button icon={Link2} disabled={!pick} busy={busy} onClick={() => send(Number(pick), true)}>Add</Button>
       </div>
-      <p className="small muted">
-        Matched automatically when a bank payment fits the price and date. Linking marks the bill paid and
-        sets the bank line to Car purchase. Closest amounts are listed first.
-      </p>
     </div>
   );
 }
@@ -672,9 +738,9 @@ function SoldSummary({ car }) {
     <div className="stack">
       <Card>
         <Line label="Sold on" value={ukDate(car.sale_date)} />
-        <Line label="Sale price" value={money(car.sale_price)} tone="in" />
+        <Line label="Sale price" value={money(car.sale_price)} />
         <Line label="Sold to" value={car.buyer_name || "Not recorded"} />
-        {car.px_allowance ? <Line label="Part-ex allowance" value={money(car.px_allowance)} tone="out" /> : null}
+        {car.px_allowance ? <Line label="Part-ex allowance" value={money(car.px_allowance)} /> : null}
         <div className="row" style={{ justifyContent: "space-between", padding: "6px 0" }}>
           <span className="muted">Invoice</span>
           <span className="row" style={{ gap: 8 }}>
@@ -682,17 +748,17 @@ function SoldSummary({ car }) {
             {inv && <Badge tone={invTone}>{invText}</Badge>}
           </span>
         </div>
-        {inv && <Line label="Outstanding" value={money(inv.outstanding)} tone={Number(inv.outstanding) > 0 ? "out" : "in"} />}
+        {inv && <Line label="Outstanding" value={money(inv.outstanding)} />}
         <div className="row" style={{ marginTop: 10 }}>
           <Button icon={FileText} onClick={() => { navigate("/admin/invoices"); }}>Open invoices</Button>
         </div>
       </Card>
       <div className="panel tone-sand">
         <div className="panel-head"><h3>Profit</h3></div>
-        <Line label="Sale price" value={money(car.sale_price)} tone="in" />
-        <Line label="less VAT due" value={money(car.vat_due) || "None"} tone={Number(car.vat_due) ? "out" : undefined} />
-        <Line label="less bought for" value={money(car.bought_for) || "Not recorded"} tone={car.bought_for != null ? "out" : undefined} />
-        <Line label="less costs (net)" value={money(car.costs_net)} tone={Number(car.costs_net) ? "out" : undefined} />
+        <Line label="Sale price" value={money(car.sale_price)} />
+        <Line label="less VAT due" value={money(car.vat_due) || "None"} />
+        <Line label="less bought for" value={money(car.bought_for) || "Not recorded"} />
+        <Line label="less costs" value={money(car.costs_net)} />
         <div style={{ borderTop: "1px solid var(--border-strong)", marginTop: 6 }}>
           <Line label="Profit ex VAT" value={car.profit != null ? money(car.profit) : "Needs a purchase price"} strong
             tone={car.profit != null ? signTone(car.profit) : undefined} />
