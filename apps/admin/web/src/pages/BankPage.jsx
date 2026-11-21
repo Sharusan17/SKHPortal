@@ -250,12 +250,29 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
     if (res) refresh();
   };
 
-  // Money in can be paid against an invoice; money out can be linked to a car.
+  const unpayInvoice = async (t) => {
+    if (!window.confirm(`Take this line off invoice ${t.invoice_no}? The invoice will show ${money(Math.abs(t.amount))} less paid.`)) return;
+    const res = await run(() => api.del(`/admin/api/transactions/${t.id}/pay-invoice`));
+    if (res) refresh();
+  };
+
+  // Only a Car sale line (or one not sorted yet) can pay an invoice. Any other money in, such as
+  // a refund from a supplier, is a cost or income of its own: it can be tied to a car or stay General.
   const linkCell = (t) => {
     const moneyIn = Number(t.amount) > 0;
+    const canPay = t.category === meta.car_sale || t.category === meta.uncategorised;
+    const isCost = (meta.expense_categories || []).includes(t.category);
     return (
       <div className="row" style={{ flexWrap: "nowrap", gap: 6 }}>
-        {t.invoice_no && <Badge tone="green" icon={FileText}>{`Invoice ${t.invoice_no}`}</Badge>}
+        {t.invoice_no && (
+          <>
+            <Badge tone="green" icon={FileText}>{`Invoice ${t.invoice_no}`}</Badge>
+            <button type="button" className="icon-btn" aria-label={`Take off invoice ${t.invoice_no}`}
+              title={`Take off invoice ${t.invoice_no}`} disabled={busy} onClick={() => unpayInvoice(t)}>
+              <X size={14} />
+            </button>
+          </>
+        )}
         {t.car_id && (
           <>
             <Badge tone="blue" icon={Link}>{t.car_reg || `Car ${t.car_id}`}</Badge>
@@ -268,15 +285,18 @@ function TransactionsTab({ txns, prog, drafts, setDrafts, quarter, meta, cars, i
           </>
         )}
         {!t.invoice_id && !t.car_id && (moneyIn ? (
-          openInvoices.length > 0 ? (
+          canPay && openInvoices.length > 0 ? (
             <Select aria-label="Pay invoice" options={invoiceOptions} value="" disabled={busy}
               onChange={(v) => v && payInvoice(t, Number(v))} />
+          ) : isCost ? (
+            <Select aria-label="Link to car" options={carOptions} value="" disabled={busy}
+              onChange={(v) => linkTo(t, v ? Number(v) : null)} />
           ) : <span className="muted small">General</span>
         ) : (
           <>
             <Select aria-label="Link to car" options={carOptions} value="" disabled={busy}
               onChange={(v) => linkTo(t, v ? Number(v) : null)} />
-            {refundInvoices.length > 0 && (
+            {canPay && refundInvoices.length > 0 && (
               <Select aria-label="Refund for invoice" options={refundOptions} value="" disabled={busy}
                 onChange={(v) => v && payInvoice(t, Number(v))} />
             )}

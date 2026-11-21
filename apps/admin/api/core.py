@@ -983,6 +983,9 @@ def update_transactions(conn, edited: pd.DataFrame) -> int:
                              (cat, money_str(vat), manual, notes, car_id, when, desc, cur["id"]))
                 if cat not in EXPENSE_CATEGORIES:  # an expense type only belongs on a cost
                     conn.execute("UPDATE transactions SET expense_type = NULL WHERE id = ?", (cur["id"],))
+                if cur["category"] == CAR_SALE and cat != CAR_SALE:
+                    # No longer a car sale, so it no longer pays the car's invoice.
+                    conn.execute("DELETE FROM invoice_payments WHERE txn_id = ?", (cur["id"],))
                 changed += 1
     return changed
 
@@ -2264,6 +2267,11 @@ def pay_invoice_from_bank(conn, txn_id: int, invoice_id: int) -> int:
     if not t or not inv:
         raise ValueError("Bank line or invoice not found.")
     amount = dec(t["amount"])
+    # Only a car sale pays a car's invoice. A refund from a supplier, other income or a cost
+    # never does, so picking the wrong line can't mark an invoice as paid.
+    if t["category"] not in (CAR_SALE, UNCATEGORISED):
+        raise ValueError(f"Only a Car sale (stock book) line can pay an invoice. This one is "
+                         f"{t['category']}: change the category to Car sale first if it really is the buyer paying.")
     if amount < 0 and payment_status(conn, inv)["refund_owed"] <= 0:
         raise ValueError(f"No refund is owed on invoice {inv['invoice_no']}; only money coming in can pay it.")
     if conn.execute("SELECT 1 FROM invoice_payments WHERE txn_id = ?", (txn_id,)).fetchone():
@@ -2275,6 +2283,23 @@ def pay_invoice_from_bank(conn, txn_id: int, invoice_id: int) -> int:
         conn.execute("UPDATE transactions SET category = ?, car_id = ?, vat = '0.00', vat_manual = 0 "
                      "WHERE id = ?", (CAR_SALE, inv["vehicle_id"], txn_id))
     return pid
+
+
+def unpay_invoice_from_bank(conn, txn_id: int) -> str | None:
+    """Take a bank line off the invoice it was recorded against. Returns the invoice number.
+    A line still marked Car sale goes back to uncategorised (it's no longer tied to a sale);
+    any other category keeps its category and just loses the car link the payment added."""
+    t = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
+    if not t:
+        raise ValueError("Bank line not found.")
+    row = conn.execute("SELECT i.invoice_no FROM invoice_payments p JOIN invoices i ON i.id = p.invoice_id "
+                       "WHERE p.txn_id = ?", (txn_id,)).fetchone()
+    with conn:
+        conn.execute("DELETE FROM invoice_payments WHERE txn_id = ?", (txn_id,))
+        if t["category"] == CAR_SALE:
+            conn.execute("UPDATE transactions SET category = ?, car_id = NULL, vat = '0.00', vat_manual = 0 "
+                         "WHERE id = ?", (UNCATEGORISED, txn_id))
+    return row["invoice_no"] if row else None
 
 
 # ---------------------------------------------------------------- car journey
