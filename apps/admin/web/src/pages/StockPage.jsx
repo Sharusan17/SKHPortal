@@ -63,8 +63,8 @@ export default function StockPage() {
         <StatCard tone="sage" icon={Car} label="In stock" value={unsold.length} sub="Unsold cars" />
         <StatCard tone="sand" icon={Calculator} label="Stock at cost · incl. VAT" value={money(atCost)}
           sub="Unsold, what you paid incl. VAT and fees" />
-        <StatCard tone="blush" icon={CheckCircle2} label={`Sold · ${period.label}`}
-          value={soldQ ? soldQ.length : <Spinner />} sub={`${money(takings)} in sales, incl. VAT`} />
+        <StatCard tone="blush" icon={CheckCircle2} label={`Sold · ${period.label} · incl. VAT`}
+          value={money(takings)} sub={`${plural(soldQ.length, "car")} sold`} />
         <StatCard tone="lilac" icon={Calculator} label="Profit · after VAT" sub={`${period.label}, after VAT paid to HMRC`}
           value={profit !== null ? money(profit) : <Spinner />} />
       </div>
