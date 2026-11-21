@@ -2352,6 +2352,46 @@ def link_transaction(conn, txn_id: int, car_id: int | None) -> None:
         conn.execute("UPDATE transactions SET car_id = ? WHERE id = ?", (car_id, txn_id))
 
 
+def link_purchase_payment(conn, car_id: int, txn_id: int, link: bool = True) -> None:
+    """Mark a bank line (money out) as the payment for a car's purchase, or take it off again.
+    Linking makes it a Car purchase line for that car (no VAT of its own: the car's VAT comes
+    from the stock book). Unlinking puts it back to uncategorised so it can be sorted again."""
+    if not _car(conn, car_id):
+        raise ValueError("Car not found.")
+    t = conn.execute("SELECT * FROM transactions WHERE id = ?", (txn_id,)).fetchone()
+    if not t:
+        raise ValueError("Bank line not found.")
+    with conn:
+        if link:
+            if dec(t["amount"]) >= 0:
+                raise ValueError("Only money going out can pay for a car.")
+            if t["car_id"] and t["car_id"] != car_id:
+                raise ValueError("That bank line is already linked to another car. Unlink it there first.")
+            conn.execute("UPDATE transactions SET category = ?, car_id = ?, vat = '0.00', vat_manual = 0, "
+                         "expense_type = NULL WHERE id = ?", (CAR_PURCHASE, car_id, txn_id))
+        else:
+            if t["car_id"] != car_id or t["category"] != CAR_PURCHASE:
+                raise ValueError("That bank line isn't this car's purchase payment.")
+            conn.execute("UPDATE transactions SET category = ?, car_id = NULL, vat = '0.00', vat_manual = 0 "
+                         "WHERE id = ?", (UNCATEGORISED, txn_id))
+
+
+def car_paperwork(conn, car_id: int) -> dict:
+    """Every invoice and receipt that belongs to a car, beyond the documents uploaded on it:
+    receipts on its linked costs, its sales invoice and any credit notes."""
+    receipts = [dict(r) for r in conn.execute(
+        "SELECT r.id, r.filename, r.uploaded_at, t.id AS txn_id, t.date, t.description, t.amount "
+        "FROM receipts r JOIN transactions t ON t.id = r.txn_id WHERE t.car_id = ? ORDER BY t.date, r.id",
+        (car_id,))]
+    invoices = [{"id": i["id"], "invoice_no": i["invoice_no"], "invoice_date": i.get("invoice_date"),
+                 "void": bool(i.get("void"))}
+                for i in list_invoices(conn) if i["vehicle_id"] == car_id]
+    notes = [{"id": cn["id"], "credit_no": cn["credit_no"], "kind_label": cn["kind_label"],
+              "invoice_no": cn["invoice_no"], "credit_date": cn["credit_date"]}
+             for cn in list_credit_notes(conn) if cn["car_id"] == car_id]
+    return {"receipts": receipts, "invoices": invoices, "credit_notes": notes}
+
+
 def car_costs(conn, car_id: int) -> list[dict]:
     rows = conn.execute("SELECT t.*, (SELECT COUNT(*) FROM receipts r WHERE r.txn_id = t.id) AS receipts "
                         "FROM transactions t WHERE t.car_id = ? AND t.category IN (?, ?, ?) "
@@ -2424,8 +2464,12 @@ def rename_car_document(conn, doc_id: int, name: str) -> dict:
 def car_overview(conn, today: date | None = None) -> list[dict]:
     """Every car with its stage, money and paperwork worked out, for the stock board and Home."""
     today = today or date.today()
-    paid_purchases = {r["car_id"] for r in conn.execute(
-        "SELECT car_id FROM transactions WHERE category = ? AND car_id IS NOT NULL", (CAR_PURCHASE,))}
+    purchase_lines: dict[int, list[dict]] = {}
+    for r in conn.execute("SELECT id, date, description, amount, car_id FROM transactions "
+                          "WHERE category = ? AND car_id IS NOT NULL ORDER BY date, id", (CAR_PURCHASE,)):
+        purchase_lines.setdefault(r["car_id"], []).append(
+            {"id": r["id"], "date": r["date"], "description": r["description"], "amount": dec(r["amount"])})
+    paid_purchases = set(purchase_lines)
     credits = list_credit_notes(conn)
     returned = {cn["invoice_id"] for cn in credits if cn["kind"] == "return"}
     invoices = {}
@@ -2481,6 +2525,7 @@ def car_overview(conn, today: date | None = None) -> list[dict]:
             "days_in_stage": (today - stage_since).days if stage_since and not c["sale_date"] else None,
             "costs": costs, "costs_net": cost_net, "bought_for": bought_for, "vat_due": vat_due,
             "profit": profit, "takings": takings, "paid": paid, "documents": docs.get(c["id"], 0),
+            "purchase_payments": purchase_lines.get(c["id"], []),  # bank lines that paid for the car
             "mileage_history": json.loads(c.get("mileage_history") or "[]"),
             "invoice": {"id": inv["id"], "invoice_no": inv["invoice_no"], **pay} if inv else None,
             "credit_notes": [{"credit_no": cn["credit_no"], "kind_label": cn["kind_label"], "amount": cn["amount"],

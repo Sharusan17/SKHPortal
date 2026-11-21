@@ -542,6 +542,19 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
     def reminders(conn=Depends(db)):
         return jsonable_encoder(core.reminders(conn))
 
+    @app.get("/api/cars/{car_id}/paperwork")
+    def car_paperwork(car_id: int, conn=Depends(db)):
+        return jsonable_encoder(core.car_paperwork(conn, car_id))
+
+    @app.post("/api/cars/{car_id}/purchase-payment")
+    def link_purchase_payment(car_id: int, body: dict, conn=Depends(db)):
+        txn_id, link = int(body.get("txn_id") or 0), body.get("link", True) is not False
+        try:
+            core.link_purchase_payment(conn, car_id, txn_id, link)
+        except ValueError as e:
+            bad(str(e))
+        return {"message": "Purchase payment linked: bill marked paid." if link else "Purchase payment unlinked."}
+
     @app.get("/api/cars/{car_id}/documents")
     def car_documents(car_id: int, conn=Depends(db)):
         return core.list_car_documents(conn, car_id)
