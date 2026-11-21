@@ -167,13 +167,39 @@ def set_permissions(conn, data: dict) -> dict[str, bool]:
 
 # ---------------------------------------------------------------- who is this, and may they?
 
+def owner_name(conn) -> dict:
+    """The owner's name: the Owner name in Business details (also editable on the Users page).
+    The owner's email and password come from Railway, not from here."""
+    try:
+        r = conn.execute("SELECT owner_name FROM business WHERE id = 1").fetchone()
+    except Exception:  # no business row yet
+        r = None
+    full = " ".join(str((r["owner_name"] if r else "") or "").split())
+    if not full:
+        return {"first_name": "Owner", "last_name": "", "name": "Owner"}
+    first, _, last = full.partition(" ")
+    return {"first_name": first, "last_name": last, "name": full}
+
+
+def set_owner_name(conn, first: str, last: str) -> dict:
+    full = " ".join(f"{first or ''} {last or ''}".split())
+    if not full:
+        raise ValueError("Enter the owner's first name.")
+    if len(full) > 120:
+        raise ValueError("Keep the name under 120 characters.")
+    with conn:
+        cur = conn.execute("UPDATE business SET owner_name = ? WHERE id = 1", (full,))
+    if not cur.rowcount:
+        raise ValueError("Fill in the Business details first.")
+    return owner_name(conn)
+
+
 def who(conn, auth: admin_auth.Auth, email: str | None) -> dict | None:
     """The signed-in person for a session email: the owner, or an active user. None otherwise."""
     if not email:
         return None
     if auth.is_owner(email):
-        return {"email": auth.email, "first_name": "Owner", "last_name": "", "name": "Owner",
-                "role": "admin", "owner": True}
+        return {"email": auth.email, **owner_name(conn), "role": "admin", "owner": True}
     r = get_by_email(conn, email)
     if not r or not r["active"]:
         return None
@@ -364,5 +390,5 @@ def body_of(req: dict) -> bytes:
 def close_request(conn, request_id: int, status: str, admin: dict, note: str = "") -> None:
     with conn:
         conn.execute("UPDATE change_requests SET status = ?, decided_by = ?, decided_at = ?, note = ?, body = '' "
-                     "WHERE id = ?", (status, admin["name"] if not admin.get("owner") else "Owner", _now(),
+                     "WHERE id = ?", (status, admin.get("name") or "Owner", _now(),
                                       note[:2000], request_id))
