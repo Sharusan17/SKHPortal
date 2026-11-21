@@ -12,6 +12,14 @@ async function request(method, url, body) {
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (res.status === 401) window.dispatchEvent(new Event("auth-required")); // session ended
+  // A user's change is held for an admin to approve: nothing was saved yet. Callers see this as a
+  // failed save (so their form keeps what was typed); useAction shows the message as information.
+  if (res.status === 202 && data && data.pending) {
+    window.dispatchEvent(new Event("approvals-changed"));
+    const err = new Error(data.message || "Sent to an admin for approval.");
+    err.pending = true;
+    throw err;
+  }
   if (!res.ok) {
     const detail = data && data.detail;
     throw new Error(typeof detail === "string" ? detail : `Request failed (${res.status})`);

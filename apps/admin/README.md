@@ -15,7 +15,8 @@ apps/admin/
     server.py        routes, sign-in guard; serves the built page
     db.py            PostgreSQL connection (DATABASE_URL, `admin` schema)
     core.py          VAT return, stock book, invoices, credit notes, expenses, periods
-    auth.py          admin sign-in (hashed password, signed session cookie, lock-out)
+    auth.py          sign-in (hashed passwords, signed session cookie, lock-out)
+    users.py         other users, roles (admin / user), what users may do, the approvals queue
     invoice_pdf.py   invoice layout (do not change coordinates, fonts or layout)
     credit_note_pdf.py, lookups.py (Companies House, HMRC VAT check, DVLA/DVSA)
   web/         React page (pages at /admin, /admin/stock, /admin/invoices, /admin/car/12 ...)
@@ -34,6 +35,20 @@ python api/auth.py        # asks for the password twice, prints ADMIN_PASSWORD_H
 
 Put them, with `ADMIN_EMAIL`, in `apps/admin/.env` locally or in the Railway service variables.
 Five wrong passwords lock that device out for 15 minutes (20 across all devices locks sign-in).
+
+`ADMIN_EMAIL` is the owner: always an admin, and the way back in if every other account is lost.
+
+### Users and roles
+
+Admins add people on the Users page (the people icon at the top): first and last name, the email
+they sign in with, a first password (8+ characters) and a role. Everyone can change their own
+password from the sidebar; an admin can set a new one for someone who forgot theirs.
+
+- **Admin**: everything; their changes apply straight away.
+- **User**: Home, Stock Book, Invoices and Expenses only (never the bank, the VAT return, the
+  business settings or other users; the server refuses those too). What they may change is switched
+  on or off per area on the Users page. Whatever they save waits on the **Approvals** page until an
+  admin approves it, which then applies it exactly as if the admin had made the change.
 
 ## Run locally
 

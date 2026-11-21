@@ -412,8 +412,10 @@ const drawer = {
 const amountColour = (v) => (Number(v) > 0 ? "var(--red)" : Number(v) < 0 ? "var(--green)" : undefined);
 
 function CostsSection({ car }) {
-  const { version, refresh } = useApp();
-  const txns = useLoad(() => api.get("/admin/api/transactions", { p: "all" }), [version]);
+  const { version, refresh, isAdmin } = useApp();
+  // The bank list is for admins; users see the linked costs but can't link or unlink them.
+  const txns = useLoad(() => (isAdmin ? api.get("/admin/api/transactions", { p: "all" }) : Promise.resolve([])),
+    [version, isAdmin]);
   const paper = useLoad(() => api.get(`/admin/api/cars/${car.id}/paperwork`), [car.id, version]);
   const [pick, setPick] = useState("");
   const [linkAct, linking] = useAction();
@@ -464,8 +466,10 @@ function CostsSection({ car }) {
                 )}
               </span>
               <span className="list-value" style={{ color: amountColour(gross(c)), fontWeight: 600 }}>{money(gross(c))}</span>
-              <IconButton icon={X} label={`Unlink ${c.description}`} disabled={linking}
-                onClick={() => link(c.id, null)} />
+              {isAdmin && (
+                <IconButton icon={X} label={`Unlink ${c.description}`} disabled={linking}
+                  onClick={() => link(c.id, null)} />
+              )}
             </div>
           ))}
           {costs.length > 0 && (
@@ -477,7 +481,7 @@ function CostsSection({ car }) {
         </div>
       </Card>
 
-      <Card title="Link a bank payment" icon={Link2}>
+      {isAdmin && <Card title="Link a bank payment" icon={Link2}>
         <div className="stack-sm">
           {txns.error && <Alert tone="error">{txns.error.message}</Alert>}
           <div className="row" style={{ gap: 8, alignItems: "stretch" }}>
@@ -490,7 +494,7 @@ function CostsSection({ car }) {
           </div>
           <p className="small muted">Money-out lines from any date that aren't linked to a car yet, newest first.</p>
         </div>
-      </Card>
+      </Card>}
     </div>
   );
 }
@@ -645,10 +649,11 @@ function Line({ label, value, strong = false, tone }) {
 // The bank payment(s) that paid for the car. Matched automatically when the amount and date fit;
 // pick one here when it wasn't, or to change it.
 function PurchasePayment({ car }) {
-  const { version, refresh } = useApp();
+  const { version, refresh, isAdmin } = useApp();
   const [editing, setEditing] = useState(false);
-  const txns = useLoad(() => (editing ? api.get("/admin/api/transactions", { p: "all" }) : Promise.resolve(null)),
-    [version, editing]);
+  // The bank list is admins-only, and only loaded once the box is opened to edit.
+  const txns = useLoad(() => (editing && isAdmin ? api.get("/admin/api/transactions", { p: "all" }) : Promise.resolve(null)),
+    [version, editing, isAdmin]);
   const [pick, setPick] = useState("");
   const [act, busy] = useAction();
   const linked = car.purchase_payments || [];
@@ -663,15 +668,19 @@ function PurchasePayment({ car }) {
     .sort((a, b) => Math.abs(-Number(a.amount) - target) - Math.abs(-Number(b.amount) - target))
     .map((t) => ({ value: String(t.id), label: `${ukDate(t.date)} · ${t.description} · ${money(-t.amount)}` }));
 
-  if (!editing) {
+  if (!editing || !isAdmin) {
+    // Users see what paid for the car but can't change it (bank payments are for admins).
+    const Box = isAdmin ? "button" : "div";
     return (
-      <button type="button" className="purchase-pay is-closed" onClick={() => setEditing(true)}
-        title="Click to add or remove the bank payment">
+      <Box {...(isAdmin ? { type: "button", onClick: () => setEditing(true), title: "Click to add or remove the bank payment" } : {})}
+        className={`purchase-pay is-closed ${isAdmin ? "" : "read-only"}`}>
         <span className="row" style={{ justifyContent: "space-between", alignItems: "baseline", width: "100%" }}>
           <strong>Purchase payment</strong>
           {linked.length > 0 ? <Badge tone="green">Bill paid</Badge> : <Badge tone="orange">Not linked</Badge>}
         </span>
-        {linked.length === 0 && <span className="small muted">No bank payment linked. Click to link one.</span>}
+        {linked.length === 0 && (
+          <span className="small muted">{isAdmin ? "No bank payment linked. Click to link one." : "No bank payment linked."}</span>
+        )}
         {linked.map((t) => (
           <span key={t.id} className="row" style={{ justifyContent: "space-between", width: "100%", gap: 12 }}>
             <span className="list-text" style={{ textAlign: "left" }}>
@@ -681,7 +690,7 @@ function PurchasePayment({ car }) {
             <strong className="num">{money(-t.amount)}</strong>
           </span>
         ))}
-      </button>
+      </Box>
     );
   }
 

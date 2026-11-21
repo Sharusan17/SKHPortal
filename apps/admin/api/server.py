@@ -21,6 +21,7 @@ import core
 import bank_pdf
 import invoice_pdf
 import lookups
+import users
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
@@ -156,9 +157,23 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
     invoice_pdf.DEFAULT_LOGO = core.receipts_dir(conn).parent / "logo.png"
     core.tidy_saved_logo(conn, invoice_pdf.DEFAULT_LOGO)  # a logo from before the tidy-up, once
     lock = threading.Lock()  # one SQLite connection shared by FastAPI's worker threads
+    users.ensure(conn)
 
     # ---------------------------------------------------------------- sign in
     open_paths = {"/api/auth/login", "/api/auth/me", "/api/auth/logout", "/api/version"}
+    OWNER = {"email": "", "first_name": "Owner", "last_name": "", "name": "Owner", "role": "admin", "owner": True}
+
+    def person_of(request: Request) -> dict | None:
+        """Who is making this request: an admin's approved change being applied, the signed-in
+        person, or (with sign-in switched off, as in local tests) the owner."""
+        actor = request.scope.get("skh_actor")
+        if actor:
+            return actor
+        if auth is None:
+            return OWNER
+        email = auth.session_email(request.cookies.get(admin_auth.COOKIE))
+        with lock:
+            return users.who(conn, auth, email)
 
     def local_path(request: Request) -> str:
         path, root = request.scope["path"], request.scope.get("root_path", "")
@@ -168,20 +183,43 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         fwd = request.headers.get("x-forwarded-for", "")
         return fwd.split(",")[0].strip() or (request.client.host if request.client else "unknown")
 
-    if auth is not None:
-        @app.middleware("http")
-        async def require_login(request: Request, call_next):
-            path = local_path(request)
-            if path.startswith("/api/") and path not in open_paths                     and not auth.session_ok(request.cookies.get(admin_auth.COOKIE)):
-                return JSONResponse({"detail": "Please sign in."}, status_code=401)
+    @app.middleware("http")
+    async def require_login(request: Request, call_next):
+        """Signed in, and allowed: admins do anything; a user's changes are held for approval."""
+        path = local_path(request)
+        if not path.startswith("/api/") or path in open_paths:
             return await call_next(request)
+        person = person_of(request)
+        if person is None:
+            return JSONResponse({"detail": "Please sign in."}, status_code=401)
+        with lock:
+            perms = users.permissions(conn)
+        action, why = users.decide(person, request.method, path, perms)
+        if action == "deny":
+            return JSONResponse({"detail": why}, status_code=403)
+        if action == "queue":
+            body = await request.body()
+            with lock:
+                req = users.queue(conn, person, request.method, path, request.url.query,
+                                  request.headers.get("content-type", ""), body)
+            return JSONResponse({"pending": True, "request": req,
+                                 "message": f"Sent to an admin for approval: {req['summary']}."}, status_code=202)
+        return await call_next(request)
 
     @app.get("/api/auth/me")
     def auth_me(request: Request):
+        person = person_of(request)
         if auth is None:
-            return {"signed_in": True, "required": False}
-        return {"signed_in": auth.session_ok(request.cookies.get(admin_auth.COOKIE)), "required": True,
-                "configured": auth.configured}
+            base = {"signed_in": True, "required": False}
+        else:
+            base = {"signed_in": person is not None, "required": True, "configured": auth.configured}
+        if person is None:
+            return base
+        with lock:
+            pending = users.pending_count(conn, person)
+            perms = users.permissions(conn)
+        return {**base, "user": person, "pending_requests": pending, "permissions": perms,
+                "pages": None if person["role"] == "admin" else users.USER_PAGES}
 
     @app.post("/api/auth/login")
     def auth_login(body: LoginIn, request: Request):
@@ -195,12 +233,16 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
             wait = auth.locked_for(key, limit)
             if wait:
                 bad(f"Too many wrong tries. Try again in {max(1, round(wait / 60))} minutes.", 429)
-        if not auth.login(who, body.email, body.password):
+        email = (body.email or "").strip().lower()
+        with lock:
+            account = None if auth.is_owner(email) else users.get_by_email(conn, email)
+        user_hash = account["password_hash"] if account and account["active"] else None
+        if not auth.login(who, email, body.password, user_hash):
             auth.record_fail("*")
             bad("Wrong email or password.", 401)
         res = JSONResponse({"ok": True})
         secure = request.headers.get("x-forwarded-proto") == "https" or os.environ.get("COOKIE_SECURE") == "1"
-        res.set_cookie(admin_auth.COOKIE, auth.make_session(), max_age=admin_auth.SESSION_HOURS * 3600,
+        res.set_cookie(admin_auth.COOKIE, auth.make_session(email), max_age=admin_auth.SESSION_HOURS * 3600,
                        httponly=True, secure=secure, samesite="strict", path="/admin")
         return res
 
@@ -209,6 +251,124 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         res = JSONResponse({"ok": True})
         res.delete_cookie(admin_auth.COOKIE, path="/admin")
         return res
+
+    # ---------------------------------------------------------------- people and approvals
+
+    def me(request: Request) -> dict:
+        person = person_of(request)
+        if person is None:
+            bad("Please sign in.", 401)
+        return person
+
+    @app.post("/api/me/password")
+    def change_password(body: dict, request: Request):
+        person = me(request)
+        if person.get("owner"):
+            bad("The owner's password is set on Railway (ADMIN_PASSWORD_HASH): run python api/auth.py for a new one.")
+        try:
+            with lock:
+                users.change_own_password(conn, person["email"], body.get("current", ""), body.get("new", ""))
+        except ValueError as e:
+            bad(str(e))
+        return {"message": "Password changed."}
+
+    @app.get("/api/users")
+    def list_people():
+        with lock:
+            return {"users": jsonable_encoder(users.list_users(conn)), "roles": users.ROLES,
+                    "permissions": users.permissions(conn), "permission_labels": users.PERMISSIONS,
+                    "owner_email": auth.email if auth else "", "min_password": users.MIN_PASSWORD}
+
+    @app.post("/api/users")
+    def add_person(body: dict):
+        try:
+            with lock:
+                u = users.create_user(conn, body, auth.email if auth else "")
+        except ValueError as e:
+            bad(str(e))
+        return {**jsonable_encoder(u), "message": f"{u['name']} can now sign in with {u['email']}."}
+
+    @app.patch("/api/users/{user_id}")
+    def change_person(user_id: int, body: dict, request: Request):
+        try:
+            with lock:
+                u = users.update_user(conn, user_id, body, me(request)["email"])
+        except ValueError as e:
+            bad(str(e))
+        return {**jsonable_encoder(u), "message": f"Saved {u['name']}."}
+
+    @app.put("/api/settings/permissions")
+    def set_permissions(body: dict):
+        with lock:
+            perms = users.set_permissions(conn, body)
+        return {"permissions": perms, "message": "Saved what users can do."}
+
+    @app.get("/api/approvals")
+    def approvals(request: Request, status: str = ""):
+        person = me(request)
+        with lock:
+            return jsonable_encoder(users.list_requests(conn, person, status or None))
+
+    async def apply_change(req: dict, admin: dict) -> tuple[int, dict]:
+        """Run a held change now, as the approving admin, through the app itself (same checks,
+        same code as if the admin had done it). Returns the status and the JSON reply."""
+        body = users.body_of(req)
+        scope = {
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": req["method"],
+            "scheme": "http", "path": req["path"], "raw_path": req["path"].encode(), "root_path": "",
+            "query_string": (req["query"] or "").encode(), "client": ("127.0.0.1", 0), "server": ("internal", 80),
+            "headers": [(b"content-type", (req["content_type"] or "").encode()),
+                        (b"content-length", str(len(body)).encode())],
+            "skh_actor": admin,
+        }
+        sent = {"done": False}
+
+        async def receive():
+            if sent["done"]:
+                return {"type": "http.disconnect"}
+            sent["done"] = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        reply = {"status": 500, "chunks": []}
+
+        async def send(message):
+            if message["type"] == "http.response.start":
+                reply["status"] = message["status"]
+            elif message["type"] == "http.response.body":
+                reply["chunks"].append(message.get("body", b""))
+
+        await app(scope, receive, send)
+        raw = b"".join(reply["chunks"])
+        try:
+            data = json.loads(raw) if raw else {}
+        except ValueError:
+            data = {}
+        return reply["status"], data if isinstance(data, dict) else {}
+
+    @app.post("/api/approvals/{request_id}/approve")
+    async def approve(request_id: int, request: Request):
+        admin = me(request)
+        with lock:
+            req = users.get_request(conn, request_id)
+        if not req or req["status"] != "pending":
+            bad("That request isn't waiting any more.", 409)
+        status, data = await apply_change(req, admin)
+        if status >= 400:
+            # Leave it waiting, so it can be looked at or rejected; say why it didn't go through.
+            bad(f"Couldn't apply it: {data.get('detail') or f'error {status}'}", 409)
+        with lock:
+            users.close_request(conn, request_id, "approved", admin, data.get("message") or "")
+        return {"message": f"Approved: {req['summary']}."}
+
+    @app.post("/api/approvals/{request_id}/reject")
+    def reject(request_id: int, body: dict, request: Request):
+        admin = me(request)
+        with lock:
+            req = users.get_request(conn, request_id)
+            if not req or req["status"] != "pending":
+                bad("That request isn't waiting any more.", 409)
+            users.close_request(conn, request_id, "rejected", admin, str(body.get("note") or ""))
+        return {"message": f"Rejected: {req['summary']}."}
     hmrc_confirmed: set[str] = set()  # VRNs HMRC has confirmed while the server has been running
 
     def db():
