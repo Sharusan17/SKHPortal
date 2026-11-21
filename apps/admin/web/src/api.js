@@ -38,6 +38,12 @@ export const api = {
   del: (url, params) => request("DELETE", withQuery(url, params)),
 };
 
+// Sign out: the server clears the session cookie, then the app shows the sign-in page.
+export async function signOut() {
+  await fetch("/admin/api/auth/logout", { method: "POST" }).catch(() => {});
+  window.dispatchEvent(new Event("auth-required"));
+}
+
 // Downloads come back with Content-Disposition: attachment, so navigating saves the file.
 export function download(url, params) {
   const a = document.createElement("a");
