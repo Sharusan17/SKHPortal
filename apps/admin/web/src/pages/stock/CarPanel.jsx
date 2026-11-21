@@ -414,8 +414,10 @@ const amountColour = (v) => (Number(v) > 0 ? "var(--red)" : Number(v) < 0 ? "var
 function CostsSection({ car }) {
   const { version, refresh, isAdmin } = useApp();
   // The bank list is for admins; users see the linked costs but can't link or unlink them.
-  const txns = useLoad(() => (isAdmin ? api.get("/admin/api/transactions", { p: "all" }) : Promise.resolve([])),
-    [version, isAdmin]);
+  // Only fetched once the picker is opened: every bank line is the slowest thing on this page.
+  const [picking, setPicking] = useState(false);
+  const txns = useLoad(() => (isAdmin && picking ? api.get("/admin/api/transactions", { p: "all" }) : Promise.resolve([])),
+    [version, isAdmin, picking]);
   const paper = useLoad(() => api.get(`/admin/api/cars/${car.id}/paperwork`), [car.id, version]);
   const [pick, setPick] = useState("");
   const [linkAct, linking] = useAction();
@@ -430,11 +432,11 @@ function CostsSection({ car }) {
 
   const link = async (txnId, carId) => {
     const res = await linkAct(() => api.post(`/admin/api/transactions/${txnId}/link`, { car_id: carId }));
-    if (res) { setPick(""); refresh(); txns.reload(); }
+    if (res) { setPick(""); refresh(); }
   };
 
   const pickOptions = [
-    { value: "", label: available.length ? "Choose a bank payment…" : "No unlinked payments" },
+    { value: "", label: txns.loading ? "Loading…" : available.length ? "Choose a bank payment…" : "No unlinked payments" },
     ...available.map((t) => ({
       value: String(t.id), label: `${ukDate(t.date)} · ${t.description} · ${money(-t.amount)}`,
     })),
@@ -482,6 +484,9 @@ function CostsSection({ car }) {
       </Card>
 
       {isAdmin && <Card title="Link a bank payment" icon={Link2}>
+        {!picking ? (
+          <Button icon={Link2} onClick={() => setPicking(true)}>Choose a bank payment to link</Button>
+        ) : (
         <div className="stack-sm">
           {txns.error && <Alert tone="error">{txns.error.message}</Alert>}
           <div className="row" style={{ gap: 8, alignItems: "stretch" }}>
@@ -494,6 +499,7 @@ function CostsSection({ car }) {
           </div>
           <p className="small muted">Money-out lines from any date that aren't linked to a car yet, newest first.</p>
         </div>
+        )}
       </Card>}
     </div>
   );
