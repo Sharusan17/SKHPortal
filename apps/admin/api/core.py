@@ -2928,6 +2928,9 @@ def get_expense(conn, txn_id: int) -> dict:
     x = _expense_line(dict(t), regs, vat_reg_date(conn))
     x["manual"] = x["paid_by"] != "Bank"
     x["default_vat"] = default_vat(EXPENSE_TYPES.get(x["expense_type"], t["category"]), dec(t["amount"]))
+    # The VAT as stored, for the edit box. `vat` above is what the return counts, which is 0 before
+    # VAT registration or on a no-VAT type, so showing that would make a saved figure look lost.
+    x["vat_entered"] = abs(dec(t["vat"]) or ZERO)
     return x
 
 
