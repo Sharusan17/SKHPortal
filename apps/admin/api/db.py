@@ -78,6 +78,7 @@ class Cursor:
 class Connection:
     def __init__(self, url: str, schema: str = "admin"):
         self.schema = schema
+        self.url = url
         self._pg = psycopg.connect(url, autocommit=True, row_factory=_row_factory)
         self._pg.execute(pgsql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(pgsql.Identifier(schema)))
         self._pg.execute(pgsql.SQL("SET search_path TO {}").format(pgsql.Identifier(schema)))
@@ -106,6 +107,47 @@ class Connection:
 
     def close(self):
         self._pg.close()
+
+    @property
+    def healthy(self) -> bool:
+        """False once the server has dropped the connection (e.g. after a long idle)."""
+        return not (self._pg.closed or self._pg.broken)
+
+    def clone(self) -> "Connection":
+        """Another connection to the same database and schema (for the request pool)."""
+        other = Connection(self.url, self.schema)
+        for name, value in vars(self).items():  # carry extras set by core.connect, e.g. files_dir
+            if name not in ("_pg", "_tx", "schema", "url"):
+                setattr(other, name, value)
+        return other
+
+
+class Pool:
+    """A few connections shared by the web workers, so requests run side by side instead of
+    queueing for one. Connections are opened when first needed and replaced if they drop."""
+
+    def __init__(self, first: Connection, size: int = 4):
+        import queue
+        self._first, self._free, self._size, self._made = first, queue.Queue(), size, 0
+        import threading
+        self._made_lock = threading.Lock()
+
+    def get(self) -> Connection:
+        import queue
+        try:
+            conn = self._free.get_nowait()
+        except queue.Empty:
+            with self._made_lock:
+                can_make = self._made < self._size
+                if can_make:
+                    self._made += 1
+            conn = self._first.clone() if can_make else self._free.get()
+        if not conn.healthy:
+            conn = self._first.clone()
+        return conn
+
+    def put(self, conn: Connection) -> None:
+        self._free.put(conn)
 
     def __enter__(self):
         tx = self._pg.transaction()

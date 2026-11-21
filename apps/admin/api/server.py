@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+import time
 from datetime import date
 from pathlib import Path
 
@@ -13,11 +14,13 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Upload
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from PIL import Image
 from pydantic import BaseModel
 
 import auth as admin_auth
 import core
+import db as dbconn
 import bank_pdf
 import invoice_pdf
 import lookups
@@ -156,8 +159,27 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
     # The uploaded logo is business data, so it sits in the data folder with the database.
     invoice_pdf.DEFAULT_LOGO = core.receipts_dir(conn).parent / "logo.png"
     core.tidy_saved_logo(conn, invoice_pdf.DEFAULT_LOGO)  # a logo from before the tidy-up, once
-    lock = threading.Lock()  # one SQLite connection shared by FastAPI's worker threads
+    lock = threading.Lock()  # guards `conn`, the first connection (sign-in and user admin)
     users.ensure(conn)
+    # Page requests each borrow one of a few connections, so they run side by side.
+    pool = dbconn.Pool(conn, size=max(1, int(os.environ.get("ADMIN_DB_POOL", "4"))))
+
+    # Who's signed in and the user permissions are read on every request; keep them for a few
+    # seconds so a page that makes many requests doesn't look them up each time.
+    CACHE_SECONDS = 15
+    seen: dict[str, tuple[float, object]] = {}
+
+    def cached(key: str, load):
+        hit = seen.get(key)
+        if hit and time.monotonic() - hit[0] < CACHE_SECONDS:
+            return hit[1]
+        value = load()
+        seen[key] = (time.monotonic(), value)
+        return value
+
+    def forget() -> None:
+        """Call after users or permissions change, so the next request sees it."""
+        seen.clear()
 
     # ---------------------------------------------------------------- sign in
     open_paths = {"/api/auth/login", "/api/auth/me", "/api/auth/logout", "/api/version"}
@@ -172,8 +194,19 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         if auth is None:
             return OWNER
         email = auth.session_email(request.cookies.get(admin_auth.COOKIE))
-        with lock:
-            return users.who(conn, auth, email)
+        if not email:
+            return None
+
+        def load():
+            with lock:
+                return users.who(conn, auth, email)
+        return cached(f"who:{email}", load)
+
+    def current_permissions() -> dict:
+        def load():
+            with lock:
+                return users.permissions(conn)
+        return cached("permissions", load)
 
     def local_path(request: Request) -> str:
         path, root = request.scope["path"], request.scope.get("root_path", "")
@@ -189,19 +222,23 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         path = local_path(request)
         if not path.startswith("/api/") or path in open_paths:
             return await call_next(request)
-        person = person_of(request)
+        # Database work happens in a worker thread, never on the event loop, so one slow
+        # request can't hold up every other one.
+        person = await run_in_threadpool(person_of, request)
         if person is None:
             return JSONResponse({"detail": "Please sign in."}, status_code=401)
-        with lock:
-            perms = users.permissions(conn)
+        perms = await run_in_threadpool(current_permissions)
         action, why = users.decide(person, request.method, path, perms)
         if action == "deny":
             return JSONResponse({"detail": why}, status_code=403)
         if action == "queue":
             body = await request.body()
-            with lock:
-                req = users.queue(conn, person, request.method, path, request.url.query,
-                                  request.headers.get("content-type", ""), body)
+
+            def put_in_queue():
+                with lock:
+                    return users.queue(conn, person, request.method, path, request.url.query,
+                                       request.headers.get("content-type", ""), body)
+            req = await run_in_threadpool(put_in_queue)
             return JSONResponse({"pending": True, "request": req,
                                  "message": f"Sent to an admin for approval: {req['summary']}."}, status_code=202)
         return await call_next(request)
@@ -284,6 +321,7 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         try:
             with lock:
                 u = users.create_user(conn, body, auth.email if auth else "")
+            forget()
         except ValueError as e:
             bad(str(e))
         return {**jsonable_encoder(u), "message": f"{u['name']} can now sign in with {u['email']}."}
@@ -293,6 +331,7 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         try:
             with lock:
                 u = users.update_user(conn, user_id, body, me(request)["email"])
+            forget()  # e.g. a switched-off user is signed out straight away
         except ValueError as e:
             bad(str(e))
         return {**jsonable_encoder(u), "message": f"Saved {u['name']}."}
@@ -301,6 +340,7 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
     def set_permissions(body: dict):
         with lock:
             perms = users.set_permissions(conn, body)
+        forget()
         return {"permissions": perms, "message": "Saved what users can do."}
 
     @app.get("/api/approvals")
@@ -372,8 +412,11 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
     hmrc_confirmed: set[str] = set()  # VRNs HMRC has confirmed while the server has been running
 
     def db():
-        with lock:
-            yield conn
+        c = pool.get()
+        try:
+            yield c
+        finally:
+            pool.put(c)
 
     def biz(conn) -> dict:
         b = core.get_business(conn)
