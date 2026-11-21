@@ -89,7 +89,7 @@ function ProfitAndLoss({ pnl }) {
 }
 
 export default function HomePage() {
-  const { business, version, period } = useApp();
+  const { business, version, period, me } = useApp();
   const home = useLoad(() => api.get("/admin/api/home", { p: period.id }), [version, period.id]);
   const d = home.data;
 
@@ -125,7 +125,9 @@ export default function HomePage() {
   const receiptsAttached = progress.receipts_attached || 0;
   const warnings = progress.warnings || 0;
   const next = d.next_to_file;
-  const name = (business?.owner_name || "").trim();  // never the company name
+  // The person signed in: a user by their first name, the owner by the owner name in Business
+  // details. Never the company name.
+  const name = (me && !me.owner ? (me.first_name || me.name || "") : (business?.owner_name || "")).trim();
   const todayLong = new Date().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
   // The next return to send: the latest ended quarter if it isn't filed yet, else this quarter's.
