@@ -1124,7 +1124,9 @@ def calculate_return(conn, quarter: Quarter) -> VatReturn:
         return VatReturn(quarter, {n: ZERO for n in range(1, 10)},
                          [f"Not VAT registered until {vat_reg:%d/%m/%Y}, so there is no VAT return for {quarter.label}."],
                          [], [], None, [], vat_from=vat_reg, registered=False)
-    first = bool(vat_reg and quarter.start < vat_reg <= quarter.end)
+    # The first return (from registration day, even when that's the period's first day) also
+    # reclaims VAT on stock and services bought before registration.
+    first = bool(vat_reg and quarter.start <= vat_reg <= quarter.end)
     whole = quarter
     if first:  # the first return runs from the registration date to the end of the quarter
         quarter = Quarter(vat_reg, whole.end)
@@ -3099,3 +3101,95 @@ def expenses(conn, period) -> dict:
                    "refunds": sum((-x["gross"] for x in done if x["refund"]), ZERO),
                    "uncategorised": sum(x["uncategorised"] for x in lines)},
     }
+
+
+# ---------------------------------------------------------------- reports
+
+HMRC_WORDS = ("hmrc", "h m r c", "hm revenue")
+
+
+def _months_in(start: date, end: date) -> list[Quarter]:
+    out, y, m = [], start.year, start.month
+    while date(y, m, 1) <= end:
+        first = date(y, m, 1)
+        last = date(y, m, calendar.monthrange(y, m)[1])
+        out.append(Quarter(max(first, start), min(last, end)))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def _quarters_across(conn, start: date, end: date) -> list[Quarter]:
+    stagger = (get_business(conn) or {}).get("stagger") or "MAR"
+    out, q = [], quarter_for(start, stagger)
+    while q.start <= end:
+        out.append(Quarter(max(q.start, start), min(q.end, end)))
+        q = quarter_for(date.fromordinal(q.end.toordinal() + 1), stagger)
+    return out
+
+
+def report(conn, period, by: str = "month", today: date | None = None) -> dict:
+    """Profit and loss, VAT and cash flow for a period, split by month or VAT quarter, with a total.
+
+    Profit and loss is before tax and leaves VAT out (VAT isn't the business's money): car sales
+    without their VAT, less what the cars sold cost and their expenses (net of VAT reclaimed),
+    less running costs, plus other income. VAT shows what was charged, reclaimed and owed for the
+    dates in each column, and what was paid to HMRC (bank lines mentioning HMRC). Cash flow is the
+    bank as it happened, VAT included."""
+    today = today or date.today()
+    start, end = period.start, min(period.end, today)
+    if end < start:
+        end = start
+    cols = _quarters_across(conn, start, end) if by == "quarter" else _months_in(start, end)
+    cars = car_overview(conn, today)
+    reg = vat_reg_date(conn)
+    txns = _txn_rows(conn, Quarter(start, end))
+
+    def col(c: Quarter) -> dict:
+        sold = [x for x in cars if c.contains(x["sale_date"])]
+        takings = sum((x["takings"] or ZERO for x in sold), ZERO)
+        vat_on_cars = sum((x["vat_due"] or ZERO for x in sold), ZERO)
+        bought = sum((x["bought_for"] or ZERO for x in sold if x["bought_for"] is not None), ZERO)
+        car_costs_ = sum((x["costs_net"] or ZERO for x in sold), ZERO)
+        car_profit = sum((x["profit"] or ZERO for x in sold), ZERO)
+        running = other = ZERO
+        money_in = money_out = hmrc = ZERO
+        for t in txns:
+            d = to_date(t["date"])
+            if not c.contains(d):
+                continue
+            amount = dec(t["amount"])
+            vat = dec(t["vat"]) if t["category"] in VAT_CATEGORIES and vat_counts(reg, d) else ZERO
+            if t["category"] in EXPENSE_CATEGORIES and not t["car_id"]:
+                running += -amount - vat
+            elif t["category"] in (OTHER_SALE_VAT, OTHER_SALE_NO_VAT):
+                other += amount - vat
+            if (t.get("paid_by") or "Bank") == "Bank":
+                if amount > 0:
+                    money_in += amount
+                else:
+                    money_out += -amount
+                if amount < 0 and t["category"] == EXCLUDE and any(w in (t["description"] or "").lower() for w in HMRC_WORDS):
+                    hmrc += -amount
+        r = calculate_return(conn, c) if not reg or c.end >= reg else None
+        vat_out = r.boxes[1] if r else ZERO
+        vat_in = r.boxes[4] if r else ZERO
+        return {
+            "label": c.label if by == "quarter" else f"{_MONTHS[c.start.month - 1]} {c.start.year}",
+            "start": c.start, "end": c.end, "cars_sold": len(sold),
+            "car_sales": takings - vat_on_cars, "cars_cost": bought, "car_expenses": car_costs_,
+            "car_profit": car_profit, "running_costs": running, "other_income": other,
+            "net_profit": car_profit - running + other,
+            "vat_charged": vat_out, "vat_reclaimed": vat_in, "vat_owed": vat_out - vat_in,
+            "paid_to_hmrc": hmrc,
+            "money_in": money_in, "money_out": money_out, "net_cash": money_in - money_out,
+        }
+
+    columns = [col(c) for c in cols]
+    keys = [k for k in columns[0] if k not in ("label", "start", "end")] if columns else []
+    total = {k: sum((x[k] for x in columns), ZERO if k != "cars_sold" else 0) for k in keys}
+    for row in (*columns, total):
+        # What's left once the VAT owed for these dates is paid to HMRC (or comes back as a refund).
+        row["cash_after_vat"] = row["net_cash"] + row["paid_to_hmrc"] - row["vat_owed"]
+    return {"period": {"id": period.id, "label": period.label, "start": start, "end": end},
+            "by": by, "columns": columns, "total": total,
+            "vat_registered": reg}
