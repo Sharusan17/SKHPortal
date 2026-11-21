@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight, ExternalLink, FileText, Landmark, Lock, LockOpen, Paperclip, Save, Trash2, Undo2 } from "lucide-react";
 import {
   Alert, Badge, Button, Card, Field, Input, MoneyInput, PageHeader, Select, Textarea, useAction, useLoad, useToast,
@@ -28,7 +28,18 @@ export default function ExpensePage({ expenseId }) {
   const [f, setF] = useState(null);
   const [unlocked, setUnlocked] = useState(false);
 
-  useEffect(() => { if (load.data) setF(formOf(load.data)); }, [load.data]);
+  // Fill the form from the saved expense only when a different expense opens or after a save.
+  // Other reloads (adding or deleting a receipt) keep what's been typed but not saved yet.
+  const shownId = useRef(null);
+  const resetAfterSave = useRef(false);
+  useEffect(() => {
+    if (!load.data) return;
+    if (shownId.current !== load.data.id || resetAfterSave.current) {
+      setF(formOf(load.data));
+      shownId.current = load.data.id;
+      resetAfterSave.current = false;
+    }
+  }, [load.data]);
 
   if (load.error) {
     return (
@@ -76,6 +87,7 @@ export default function ExpensePage({ expenseId }) {
     else if (unlocked) Object.assign(body, { date: f.date, description: f.description, amount: Number(f.amount), unlocked: true });
     if (await run(() => api.patch(`/admin/api/expenses/${x.id}`, body))) {
       setUnlocked(false);
+      resetAfterSave.current = true;
       refresh();
     }
   };
