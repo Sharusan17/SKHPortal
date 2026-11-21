@@ -298,11 +298,20 @@ export function Field({ label, hint, error, children, className = "", variant = 
 export const Input = (props) => <input className="input" {...props} />;
 export const Textarea = (props) => <textarea className="input" rows={3} {...props} />;
 
-// Money always reads with pence (12 → 12.00): shown that way when not being typed in, and tidied on leaving the box.
+// Money always reads with pence and thousands commas (7940 → 7,940.00) when not being typed in. While
+// typing it's the plain number; leaving the box tidies the stored value to two decimals (no commas).
+const plainMoney = (v) => String(v ?? "").replace(/[£,\s]/g, "");
 const asPounds = (v) => {
-  if (v === null || v === undefined || v === "") return "";
-  const n = Number(v);
-  return Number.isFinite(n) ? n.toFixed(2) : String(v);
+  const s = plainMoney(v);
+  if (s === "") return "";
+  const n = Number(s);
+  return Number.isFinite(n) ? n.toFixed(2) : s;
+};
+const withCommas = (v) => {
+  const s = asPounds(v);
+  const n = Number(s);
+  return s === "" || !Number.isFinite(n)
+    ? s : n.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
 export function MoneyInput({ value, onChange, onFocus, onBlur, ...rest }) {
@@ -310,9 +319,9 @@ export function MoneyInput({ value, onChange, onFocus, onBlur, ...rest }) {
   return (
     <div className="money-input">
       <span>£</span>
-      <input className="input" type="number" min="0" step="0.01" inputMode="decimal"
-        value={typing ? (value ?? "") : asPounds(value)}
-        onChange={(e) => onChange(e.target.value === "" ? "" : e.target.value)}
+      <input className="input" type="text" inputMode="decimal" autoComplete="off"
+        value={typing ? plainMoney(value) : withCommas(value)}
+        onChange={(e) => onChange(plainMoney(e.target.value).replace(/[^0-9.-]/g, ""))}
         onFocus={(e) => { setTyping(true); onFocus?.(e); }}
         onBlur={(e) => {
           setTyping(false);

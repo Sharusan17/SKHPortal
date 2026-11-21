@@ -602,7 +602,9 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
 
     @app.get("/api/transactions")
     def transactions(q: str = "", p: str = "", conn=Depends(db)):
-        df = core.get_transactions_df(conn, period(conn, p) if p else quarter(conn, q))
+        # p=all: every transaction, whatever its date (so nothing imported is out of sight)
+        span = None if p == "all" else period(conn, p) if p else quarter(conn, q)
+        df = core.get_transactions_df(conn, span)
         links = {r["id"]: r["car_id"] for r in conn.execute("SELECT id, car_id FROM transactions")}
         regs = {r["id"]: r["reg"] for r in conn.execute("SELECT id, reg FROM cars")}
         paid = {r["txn_id"]: (r["invoice_id"], r["invoice_no"]) for r in conn.execute(

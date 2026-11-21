@@ -5,7 +5,7 @@ import {
   Trash2, Undo2, Upload, X, Zap,
 } from "lucide-react";
 import {
-  Alert, Badge, Button, Card, Collapsible, Field, Input, MoneyInput, PageHeader, Progress, Select, StatCard, Tabs, Toggle,
+  Alert, Badge, Button, Card, Collapsible, Field, Input, MoneyInput, PageHeader, Progress, Segmented, Select, StatCard, Tabs, Toggle,
   useAction, useLoad, useToast,
 } from "../components/ui.jsx";
 import { useApp } from "../context.js";
@@ -29,8 +29,9 @@ export default function BankPage() {
   const { meta, period, version, refresh, search } = useApp();
   const [tab, setTab] = useState("transactions");
   const [drafts, setDrafts] = useState({});
+  const [allDates, setAllDates] = useState(true); // list every transaction, not just the period's
 
-  const txnLoad = useLoad(() => api.get("/admin/api/transactions", { p: period.id }), [period.id, version]);
+  const txnLoad = useLoad(() => api.get("/admin/api/transactions", { p: "all" }), [version]);
   const stock = useLoad(() => api.get("/admin/api/stock"), [version]);
   const invoices = useLoad(() => api.get("/admin/api/invoices"), [version]);
 
@@ -42,8 +43,15 @@ export default function BankPage() {
       : <p className="muted">Loading…</p>;
   }
 
-  const txns = txnLoad.data;
-  const amounts = txns.map((t) => Number(t.amount) || 0);
+  const everything = txnLoad.data;
+  const inPeriod = (t) => {
+    const d = String(t.date ?? "").slice(0, 10);
+    return d >= period.start && d <= period.end;
+  };
+  const periodTxns = everything.filter(inPeriod);
+  const txns = allDates ? everything : periodTxns; // what the list shows
+  // The boxes at the top are always for the selected period.
+  const amounts = periodTxns.map((t) => Number(t.amount) || 0);
   const prog = {
     money_in: amounts.filter((a) => a > 0).reduce((s, a) => s + a, 0),
     money_out: -amounts.filter((a) => a < 0).reduce((s, a) => s + a, 0),
@@ -61,19 +69,26 @@ export default function BankPage() {
 
   return (
     <div className="stack">
-      <PageHeader title="Bank" subtitle={`${period.label} · Tide transactions and categories`} />
+      <PageHeader title="Bank" subtitle={`${period.label} · Tide and Barclays transactions and categories`} />
       <div className="grid-3">
         <StatCard tone="sage" icon={ArrowDownLeft} label="Money in" sub={period.label}
           value={prog ? money(prog.money_in) : "…"} />
         <StatCard tone="blush" icon={ArrowUpRight} label="Money out" sub={period.label}
           value={prog ? money(prog.money_out) : "…"} />
-        <StatCard tone="lilac" icon={CheckCircle2} label="Categorised" sub="Transactions done"
+        <StatCard tone="lilac" icon={CheckCircle2} label="Categorised"
+          sub={allDates ? "All dates" : period.label}
           value={prog ? `${prog.categorised} / ${prog.total}` : "…"} />
       </div>
 
       <Tabs tabs={tabs} value={tab} onChange={setTab} />
 
       <div style={panel("transactions")} className="stack">
+        <div className="row" style={{ gap: 10, alignItems: "center" }}>
+          <Segmented ariaLabel="Which dates to list" value={allDates ? "all" : "period"}
+            onChange={(v) => setAllDates(v === "all")}
+            options={[{ value: "all", label: `All dates (${everything.length})` },
+              { value: "period", label: `${period.label} (${periodTxns.length})` }]} />
+        </div>
         <TransactionsTab txns={txns} prog={prog} drafts={drafts} setDrafts={setDrafts}
           quarter={period} meta={meta} cars={stock.data ?? []} invoices={invoices.data ?? []}
           search={search} />

@@ -923,7 +923,7 @@ def car_reconciliation(conn, quarter: Quarter) -> dict:
     return {"unlinked_txns": unlinked, "sold_unpaid": sold, "bought_unpaid": bought}
 
 
-TXN_COLUMNS = ["id", "date", "description", "amount", "category", "vat", "notes", "receipts"]
+TXN_COLUMNS = ["id", "date", "description", "amount", "category", "vat", "notes", "receipts", "account"]
 
 
 def _txn_rows(conn, quarter: Quarter | None = None) -> list[dict]:
