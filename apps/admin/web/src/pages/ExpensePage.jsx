@@ -7,6 +7,7 @@ import { useApp } from "../context.js";
 import { api } from "../api.js";
 import { money, plural, ukDate } from "../format.js";
 import { navigate } from "../router.js";
+import CommentThread from "../components/CommentThread.jsx";
 
 const back = () => { navigate("/admin/expenses"); };
 
@@ -134,12 +135,13 @@ export default function ExpensePage({ expenseId }) {
           <>
             <Button icon={Flag} busy={busy} onClick={toggleFlag} className={x.flagged ? "flag-on" : ""}
               aria-pressed={x.flagged}>{x.flagged ? "Flagged" : "Flag"}</Button>
-            {x.flagged && <Button onClick={() => navigate(`/admin/flag/${x.id}`)}>Comments</Button>}
+            {x.flagged && <Button onClick={() => navigate(`/admin/flag/${x.id}`)}>Flag page</Button>}
             {manual && <Button variant="danger" icon={Trash2} busy={busy} onClick={remove}>Delete</Button>}
           </>
         } />
 
       <div className="grid-expenses">
+        <div className="stack" style={{ minWidth: 0 }}>
         <Card title="Details">
           <div className="stack">
             {!manual && (
@@ -190,6 +192,8 @@ export default function ExpensePage({ expenseId }) {
             </div>
           </div>
         </Card>
+        <CommentThread txnId={x.id} />
+        </div>
 
         <div className="stack">
           <Card title="Summary">
