@@ -121,6 +121,16 @@ class Connection:
                 setattr(other, name, value)
         return other
 
+    # `with conn:` runs the block as one transaction (nested blocks join the outer one).
+    def __enter__(self):
+        tx = self._pg.transaction()
+        tx.__enter__()
+        self._tx.append(tx)
+        return self
+
+    def __exit__(self, *exc):
+        return self._tx.pop().__exit__(*exc)
+
 
 class Pool:
     """A few connections shared by the web workers, so requests run side by side instead of
@@ -148,15 +158,6 @@ class Pool:
 
     def put(self, conn: Connection) -> None:
         self._free.put(conn)
-
-    def __enter__(self):
-        tx = self._pg.transaction()
-        tx.__enter__()
-        self._tx.append(tx)
-        return self
-
-    def __exit__(self, *exc):
-        return self._tx.pop().__exit__(*exc)
 
 
 def connect(url: str, schema: str = "admin") -> Connection:
