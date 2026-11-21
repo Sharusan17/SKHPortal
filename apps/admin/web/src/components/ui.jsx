@@ -65,7 +65,7 @@ export function useAction() {
       if (!quiet && res && res.message) toast("success", res.message);
       return res;
     } catch (e) {
-      toast("error", e.message);
+      toast(e.pending ? "info" : "error", e.message); // pending: held for an admin to approve
       return undefined;
     } finally {
       setBusy(false);

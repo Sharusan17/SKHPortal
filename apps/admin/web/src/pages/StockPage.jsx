@@ -18,11 +18,13 @@ const openCar = (id) => { navigate(`/admin/car/${id}`); };
 const Spinner = () => <Loader2 size={18} className="spin" />;
 
 export default function StockPage() {
-  const { quarter, period, version, search = "" } = useApp();
+  const { quarter, period, version, search = "", isAdmin } = useApp();
 
   // /api/stock feeds the board, the list and the metrics; each car opens on its own page.
   const stockLoad = useLoad(() => api.get("/admin/api/stock"), [version]);
-  const rec = useLoad(() => api.get("/admin/api/reconciliation", { q: quarter.id }), [quarter.id, version]);
+  // Bank matching is for admins (users don't see the bank).
+  const rec = useLoad(() => (isAdmin ? api.get("/admin/api/reconciliation", { q: quarter.id }) : Promise.resolve(null)),
+    [quarter.id, version, isAdmin]);
 
   const [view, setView] = useState("board");
   const [adding, setAdding] = useState(false);

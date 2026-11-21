@@ -366,8 +366,10 @@ const drawer = {
 const amountColour = (v) => (Number(v) > 0 ? "var(--green)" : Number(v) < 0 ? "var(--red)" : undefined);
 
 function CostsSection({ car }) {
-  const { version, refresh } = useApp();
-  const txns = useLoad(() => api.get("/admin/api/transactions", { p: "all" }), [version]);
+  const { version, refresh, isAdmin } = useApp();
+  // The bank list is for admins; users see the linked costs but can't link or unlink them.
+  const txns = useLoad(() => (isAdmin ? api.get("/admin/api/transactions", { p: "all" }) : Promise.resolve([])),
+    [version, isAdmin]);
   const paper = useLoad(() => api.get(`/admin/api/cars/${car.id}/paperwork`), [car.id, version]);
   const [pick, setPick] = useState("");
   const [linkAct, linking] = useAction();
@@ -415,8 +417,10 @@ function CostsSection({ car }) {
                 )}
               </span>
               <span className="list-value" style={{ color: amountColour(c.net), fontWeight: 600 }}>{money(c.net)} net</span>
-              <IconButton icon={X} label={`Unlink ${c.description}`} disabled={linking}
-                onClick={() => link(c.id, null)} />
+              {isAdmin && (
+                <IconButton icon={X} label={`Unlink ${c.description}`} disabled={linking}
+                  onClick={() => link(c.id, null)} />
+              )}
             </div>
           ))}
           {costs.length > 0 && (
@@ -428,7 +432,7 @@ function CostsSection({ car }) {
         </div>
       </Card>
 
-      <Card title="Link a bank payment" icon={Link2}>
+      {isAdmin && <Card title="Link a bank payment" icon={Link2}>
         <div className="stack-sm">
           {txns.error && <Alert tone="error">{txns.error.message}</Alert>}
           <div className="row" style={{ gap: 8, alignItems: "stretch" }}>
@@ -441,7 +445,7 @@ function CostsSection({ car }) {
           </div>
           <p className="small muted">Money-out lines from any date that aren't linked to a car yet, newest first.</p>
         </div>
-      </Card>
+      </Card>}
     </div>
   );
 }
@@ -596,8 +600,9 @@ function Line({ label, value, strong = false, tone }) {
 // The bank payment(s) that paid for the car. Matched automatically when the amount and date fit;
 // pick one here when it wasn't, or to change it.
 function PurchasePayment({ car }) {
-  const { version, refresh } = useApp();
-  const txns = useLoad(() => api.get("/admin/api/transactions", { p: "all" }), [version]);
+  const { version, refresh, isAdmin } = useApp();
+  const txns = useLoad(() => (isAdmin ? api.get("/admin/api/transactions", { p: "all" }) : Promise.resolve([])),
+    [version, isAdmin]);
   const [pick, setPick] = useState("");
   const [act, busy] = useAction();
   const linked = car.purchase_payments || [];
@@ -611,6 +616,8 @@ function PurchasePayment({ car }) {
     .filter((t) => Number(t.amount) < 0 && !t.car_id)
     .sort((a, b) => Math.abs(-Number(a.amount) - target) - Math.abs(-Number(b.amount) - target))
     .map((t) => ({ value: String(t.id), label: `${ukDate(t.date)} · ${t.description} · ${money(-t.amount)}` }));
+
+  if (!isAdmin) return null; // bank payments are for admins
 
   return (
     <div className="purchase-pay">

@@ -1,5 +1,6 @@
-"""Admin login: one admin account from the environment, a signed session cookie, and a lock-out
-after repeated wrong passwords.
+"""Admin login: the owner's account from the environment, a signed session cookie, and a lock-out
+after repeated wrong passwords. Other people sign in with accounts kept in the database
+(users.py); this module signs and checks the session for whichever email signed in.
 
 Settings (Railway variables, or admin/.env locally):
   ADMIN_EMAIL           the email to sign in with
@@ -56,19 +57,28 @@ class Auth:
     def _sign(self, payload: str) -> str:
         return hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()
 
-    def make_session(self) -> str:
-        payload = f"{self.email}|{int(time.time()) + SESSION_HOURS * 3600}"
+    def make_session(self, email: str | None = None) -> str:
+        payload = f"{(email or self.email).strip().lower()}|{int(time.time()) + SESSION_HOURS * 3600}"
         return f"{payload}|{self._sign(payload)}"
 
-    def session_ok(self, value: str | None) -> bool:
+    def session_email(self, value: str | None) -> str | None:
+        """The email a valid, unexpired session cookie was signed for, else None. Whether that
+        email may still sign in (the owner, or an active user) is the caller's check."""
         if not value or not self.configured:
-            return False
+            return None
         try:
             email, expires, sig = value.rsplit("|", 2)
+            ok = hmac.compare_digest(sig, self._sign(f"{email}|{expires}")) and int(expires) > time.time()
         except ValueError:
-            return False
-        return (hmac.compare_digest(sig, self._sign(f"{email}|{expires}"))
-                and email == self.email and int(expires) > time.time())
+            return None
+        return email if ok else None
+
+    def session_ok(self, value: str | None) -> bool:
+        """True for the owner's session."""
+        return self.is_owner(self.session_email(value))
+
+    def is_owner(self, email: str | None) -> bool:
+        return bool(self.email) and (email or "").strip().lower() == self.email
 
     # -- sign in, with a lock-out per client after repeated failures
     def locked_for(self, client: str, limit: int = MAX_FAILS) -> int:
@@ -80,9 +90,13 @@ class Auth:
                 return int(recent[0] + LOCK_MINUTES * 60 - time.time()) + 1
             return 0
 
-    def login(self, client: str, email: str, password: str) -> bool:
-        ok = (self.configured and hmac.compare_digest((email or "").strip().lower(), self.email)
-              and check_password(password or "", self.password_hash))
+    def login(self, client: str, email: str, password: str, user_hash: str | None = None) -> bool:
+        """The owner signs in with ADMIN_PASSWORD_HASH; anyone else with `user_hash`, their
+        account's stored hash (None when there's no such active account)."""
+        if self.configured and hmac.compare_digest((email or "").strip().lower(), self.email):
+            ok = check_password(password or "", self.password_hash)
+        else:
+            ok = bool(self.configured and user_hash) and check_password(password or "", user_hash)
         with self._lock:
             if ok:
                 self._fails.pop(client, None)
