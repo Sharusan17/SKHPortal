@@ -464,3 +464,11 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 .modal-back { position: fixed; inset: 0; background: rgba(17, 17, 17, .32); z-index: 60; display: grid; place-items: center; padding: 16px; }
 .modal { width: min(440px, 100%); border-radius: 14px; padding: 20px; display: flex;
   flex-direction: column; gap: 14px; box-shadow: var(--shadow-lg); background: #FFFFFF; }
+.purchase-pay.is-closed { width: 100%; text-align: left; cursor: pointer; font: inherit; color: inherit; }
+.purchase-pay.is-closed:hover { border-color: var(--border-strong); background: #fff; }
+.vat-tag { display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+  font-weight: 500; color: var(--muted); background: var(--surface); border: 1px solid var(--border); vertical-align: 1px; }
+.summary-profit { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 4px; }
+.unsaved-note { font-size: 12px; color: #9A6700; background: #FFF6DD; border-radius: 8px; padding: 6px 10px; }
+.purchase-pay.is-closed.read-only { cursor: default; }
+.purchase-pay.is-closed.read-only:hover { border-color: var(--border); background: inherit; }
