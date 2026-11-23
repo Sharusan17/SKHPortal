@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Building2, CalendarClock, CalendarCheck, CalendarX, CheckCircle2, Circle, Car, ArrowLeftRight,
-  ClipboardCheck, Flag, LayoutDashboard, Loader2, Wallet, ReceiptPoundSterling, ReceiptText, Search,
+  BarChart3, ClipboardCheck, Flag, LayoutDashboard, Loader2, Wallet, ReceiptPoundSterling, ReceiptText, Search,
   ShieldCheck, Users,
 } from "lucide-react";
 import { api } from "./api.js";
@@ -11,6 +11,7 @@ import { currentPage, interceptLinks } from "./router.js";
 import { plural, shortDate } from "./format.js";
 import HomePage from "./pages/HomePage.jsx";
 import ReturnPage from "./pages/ReturnPage.jsx";
+import ReportsPage from "./pages/ReportsPage.jsx";
 import StockPage from "./pages/StockPage.jsx";
 import InvoicesPage from "./pages/InvoicesPage.jsx";
 import BankPage from "./pages/BankPage.jsx";
@@ -31,6 +32,7 @@ const PAGES = [
   { id: "expenses", label: "Add Expenses", icon: Wallet, Component: ExpensesPage },
   { id: "bank", label: "Bank", icon: ArrowLeftRight, Component: BankPage },
   { id: "return", label: "VAT Return", icon: ReceiptText, Component: ReturnPage },
+  { id: "reports", label: "Reports", icon: BarChart3, Component: ReportsPage },
   { id: "approvals", label: "Approvals", icon: ClipboardCheck, Component: ApprovalsPage },
 ];
 

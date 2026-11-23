@@ -497,3 +497,12 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
   display: grid; place-items: center; line-height: 1; }
 .top-count-quiet { background: var(--muted); }
 .summary-subtotal { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); margin: 2px 0; }
+
+/* Reports */
+.report-wrap { margin-top: 10px; }
+.report-table td:first-child, .report-table th:first-child { position: sticky; left: 0; background: var(--panel, #fff);
+  min-width: 230px; z-index: 1; }
+.report-table td.r, .report-table th.r { white-space: nowrap; min-width: 110px; }
+.report-table .report-total { background: var(--surface); font-weight: 600; }
+.report-table tr.report-sum td { font-weight: 600; border-top: 1px solid var(--border-strong); }
+.report-table tr.report-note-row td { color: var(--muted); font-size: 12px; height: 36px; }

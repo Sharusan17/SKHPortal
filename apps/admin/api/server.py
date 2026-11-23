@@ -842,6 +842,13 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         return jsonable_encoder({"kinds": core.PERIOD_KINDS,
                                  "options": {k: [vars(x) for x in v] for k, v in core.period_options(conn).items()}})
 
+    @app.get("/api/report")
+    def report(p: str, by: str = "month", conn=Depends(db)):
+        """Profit and loss, VAT and cash flow by month or VAT quarter (the Reports page)."""
+        if by not in ("month", "quarter"):
+            bad("Split by month or quarter.")
+        return jsonable_encoder(core.report(conn, period(conn, p), by))
+
     @app.get("/api/period-summary")
     def period_summary(p: str, conn=Depends(db)):
         return jsonable_encoder(core.period_summary(conn, period(conn, p)))
