@@ -116,8 +116,8 @@ function PeopleAdmin() {
         <Card title="What users can do" icon={KeyRound}>
           <div className="stack-sm">
             <p className="small muted">
-              Users see Home, Stock Book, Invoices and Expenses only, never the bank, the VAT return or the
-              business settings. Everything they save waits for an admin to approve it on the Approvals page.
+              Users see Home, Stock Book, Invoices, Expenses, Flags and Reports (totals only), never the bank
+              lines, the VAT return or the business settings. Everything they save waits for an admin to approve it on the Approvals page.
             </p>
             {Object.entries(labels).map(([key, label]) => (
               <Toggle key={key} checked={!!permissions[key]} disabled={busy} label={label}
