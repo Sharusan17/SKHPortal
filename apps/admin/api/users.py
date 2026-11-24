@@ -207,7 +207,7 @@ def who(conn, auth: admin_auth.Auth, email: str | None) -> dict | None:
 
 
 # Pages a user sees (the rest are hidden and refused).
-USER_PAGES = ["home", "stock", "invoices", "expenses", "flags"]
+USER_PAGES = ["home", "stock", "invoices", "expenses", "flags", "reports"]
 
 # Reads a user may make. Everything else under /api/ is refused for users.
 _USER_READS = [
@@ -216,7 +216,7 @@ _USER_READS = [
     r"/api/vehicle-lookup", r"/api/documents/\d+/file", r"/api/expenses(/\d+)?",
     r"/api/transactions/\d+/receipts", r"/api/receipts/\d+/file", r"/api/invoices(/.*)?",
     r"/api/credit-notes(/.*)?", r"/api/approvals(/.*)?", r"/api/me(/.*)?",
-    r"/api/flags(/\d+)?", r"/api/people",
+    r"/api/flags(/\d+)?", r"/api/people", r"/api/report",
 ]
 _USER_READS_BLOCKED = [r"/api/cars/\d+/purchase-payment"]
 
