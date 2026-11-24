@@ -109,17 +109,24 @@ a { color: var(--ink); }
 .page-head p { margin-top: 4px; }
 .page-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .mobile-bar { display: none; }
+/* Phones and small tablets: the sidebar becomes a drawer opened from the top bar's menu button. */
+.menu-btn, .drawer-close { display: none; }
 @media (max-width: 900px) {
   .shell { grid-template-columns: minmax(0, 1fr); }
-  .sidebar { position: static; height: auto; overflow: visible; border-right: 0; border-bottom: 1px solid var(--border); padding: 14px 16px; gap: 14px; }
-  .wordmark { font-size: 20px; padding: 0; }
-  .biz-card { display: none; }
-  .nav { flex-direction: row; overflow-x: auto; gap: 4px; margin: 0 -4px; padding: 0 4px 2px; }
-  .side-block { margin-top: 0; padding-top: 0; border-top: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
-  .side-foot { display: none; }
-  .topbar { padding: 14px 16px 0; }
-  .search { flex: 1; width: auto; }
-  .main { padding: 20px 16px 48px; }
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; z-index: 60; width: min(300px, 86vw); height: 100dvh;
+    overflow-y: auto; transform: translateX(-105%); transition: transform .22s ease; box-shadow: none;
+    padding: 18px 16px 24px; gap: 18px;
+  }
+  .sidebar.open { transform: none; box-shadow: 0 0 40px rgba(17, 17, 17, .25); }
+  .drawer-backdrop { position: fixed; inset: 0; z-index: 55; background: rgba(17, 17, 17, .35); }
+  .drawer-close { display: grid; position: absolute; top: 14px; right: 14px; }
+  .menu-btn { display: grid; margin-right: auto; }
+  .side-logo img { max-height: 64px; width: auto; max-width: calc(100% - 48px); }
+  .nav a { height: 44px; }
+  .topbar { padding: 12px 16px 0; gap: 8px; }
+  .search { flex: 1; width: auto; min-width: 0; }
+  .main { padding: 18px 16px 48px; }
 }
 
 /* ---------------------------------------------------------------- cards and metrics */
@@ -506,3 +513,36 @@ ul.plain { margin: 0; padding-left: 18px; display: flex; flex-direction: column;
 .report-table .report-total { background: var(--surface); font-weight: 600; }
 .report-table tr.report-sum td { font-weight: 600; border-top: 1px solid var(--border-strong); }
 .report-table tr.report-note-row td { color: var(--muted); font-size: 12px; height: 36px; }
+
+/* ---------------------------------------------------------------- phones */
+@media (max-width: 600px) {
+  h1 { font-size: 22px; }
+  .page-head { align-items: flex-start; }
+  .page-actions { width: 100%; }
+  .input, select.input, textarea.input, .search input { font-size: 16px; }
+  .btn { min-height: 40px; }
+  .btn-sm { min-height: 34px; }
+  .card, .panel { padding: 16px; }
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 0 -16px; padding: 0 16px; }
+  .segmented { max-width: 100%; overflow-x: auto; }
+  .row { flex-wrap: wrap; }
+  .list-row { flex-wrap: wrap; }
+  .topbar .icon-square { width: 36px; height: 36px; }
+}
+html, body { overflow-x: hidden; }
+@media (max-width: 600px) {
+  /* Summary boxes: two to a row and compact, so the page's main content is reachable quickly */
+  .grid-3:has(> .stat-card), .grid-4:has(> .stat-card) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .stat-card { padding: 14px; gap: 10px; }
+  .stat-card .stat-icon { display: none; }
+  .stat-label { font-size: 13px; }
+  .stat-sub { font-size: 11px; }
+  .stat-value { font-size: 18px; }
+  /* Tabs and switches scroll sideways without a scrollbar line */
+  .tabs, .segmented { overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; }
+  .tabs::-webkit-scrollbar, .segmented::-webkit-scrollbar, .table-wrap::-webkit-scrollbar { display: none; }
+  .tabs > *, .segmented > * { flex: none; }
+  /* Report: a narrower first column leaves room for the figures */
+  .report-table td:first-child, .report-table th:first-child { min-width: 136px; max-width: 150px; white-space: normal; }
+  .report-table td.r, .report-table th.r { min-width: 92px; font-size: 13px; }
+}
