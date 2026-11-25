@@ -1,9 +1,10 @@
-import { useState } from "react";
-import { Check, ClipboardCheck, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, ClipboardCheck, Eye, Pencil, X } from "lucide-react";
 import { Alert, Badge, Button, Card, PageHeader, Segmented, useAction, useLoad } from "../components/ui.jsx";
 import { api } from "../api.js";
 import { useApp } from "../context.js";
 import { plural } from "../format.js";
+import { navigate } from "../router.js";
 
 const FILTERS = [
   { value: "pending", label: "Waiting" },
@@ -19,7 +20,85 @@ const when = (iso) => {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
 };
 
-// Admins: every user's held changes, to approve or reject. Users: their own requests.
+// A new invoice (POST /api/invoices) or a change to one (PUT /api/invoices/<id>).
+const invoiceOf = (r) => {
+  if (r.method === "POST" && r.path === "/api/invoices") return { id: null };
+  const m = r.method === "PUT" && r.path.match(/^\/api\/invoices\/(\d+)$/);
+  return m ? { id: Number(m[1]) } : null;
+};
+
+// "buyer_name" -> "Buyer name"
+const nice = (k) => String(k).replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
+
+// The fields a user sent, as a readable list instead of JSON.
+function Fields({ details }) {
+  let data = null;
+  try { data = JSON.parse(details); } catch { /* not JSON: shown as it is */ }
+  if (!data || typeof data !== "object") return <p className="small approval-text">{details}</p>;
+  const show = (v) => {
+    if (v === null || v === undefined || v === "") return <span className="muted">-</span>;
+    if (Array.isArray(v)) {
+      if (!v.length) return <span className="muted">-</span>;
+      if (v.every((x) => typeof x !== "object")) return v.join(", ");
+      return (
+        <ul className="plain approval-sub">
+          {v.map((x, i) => <li key={i}>{typeof x === "object" ? Object.entries(x).map(([k, y]) => `${nice(k)}: ${y}`).join(" · ") : String(x)}</li>)}
+        </ul>
+      );
+    }
+    if (typeof v === "object") {
+      const parts = Object.entries(v).filter(([, y]) => y !== "" && y !== null && y !== 0 && !(Array.isArray(y) && !y.length));
+      if (!parts.length) return <span className="muted">-</span>;
+      return <ul className="plain approval-sub">{parts.map(([k, y]) => <li key={k}><span className="muted">{nice(k)}:</span> {Array.isArray(y) ? y.join(", ") : String(y)}</li>)}</ul>;
+    }
+    if (typeof v === "boolean") return v ? "Yes" : "No";
+    return String(v);
+  };
+  return (
+    <dl className="approval-fields">
+      {Object.entries(data).map(([k, v]) => (
+        <div key={k} className="approval-field">
+          <dt>{nice(k)}</dt>
+          <dd>{show(v)}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+// The invoice as it would be printed, drawn from what the user sent.
+function InvoicePreview({ r, inv }) {
+  const [state, setState] = useState({ url: null, err: "", loading: false });
+  const load = async () => {
+    setState({ url: null, err: "", loading: true });
+    try {
+      const d = await api.get(`/admin/api/approvals/${r.id}/data`);
+      if (!d.data) throw new Error("This request has no invoice to show.");
+      const body = { ...d.data, ...(inv.id ? { invoice_id: inv.id } : {}) };
+      const res = await fetch("/admin/api/invoices/draft.pdf", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        let msg = `Couldn't draw the invoice (${res.status})`;
+        try { const j = await res.json(); if (typeof j.detail === "string") msg = j.detail; } catch { /* keep */ }
+        throw new Error(msg);
+      }
+      setState({ url: URL.createObjectURL(await res.blob()), err: "", loading: false });
+    } catch (e) {
+      setState({ url: null, err: e.message, loading: false });
+    }
+  };
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [r.id]);
+  useEffect(() => () => { if (state.url) URL.revokeObjectURL(state.url); }, [state.url]);
+  if (state.loading || (!state.url && !state.err)) return <p className="small muted">Drawing the invoice…</p>;
+  if (state.err) return <Alert tone="warning">{state.err}</Alert>;
+  return <iframe className="approval-pdf" src={state.url} title={`Invoice in request ${r.id}`} />;
+}
+
+// Admins: every user's held changes, to approve, amend or reject. Users: their own requests.
 export default function ApprovalsPage() {
   const { me, refresh, version } = useApp();
   const isAdmin = me.role === "admin";
@@ -27,6 +106,7 @@ export default function ApprovalsPage() {
   const load = useLoad(() => api.get("/admin/api/approvals", status ? { status } : undefined), [status, version]);
   const [run, busy] = useAction();
   const [open, setOpen] = useState(null);
+  const [preview, setPreview] = useState(null);
 
   const approve = async (r) => {
     if (await run(() => api.post(`/admin/api/approvals/${r.id}/approve`))) { load.reload(); refresh(); }
@@ -50,35 +130,52 @@ export default function ApprovalsPage() {
           <p className="small muted">{status === "pending" ? "Nothing waiting." : "Nothing here."}</p>
         )}
         <div className="stack-sm">
-          {list.map((r) => (
-            <div key={r.id} className="approval">
-              <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-                <div style={{ minWidth: 0 }}>
-                  <div className="list-title">{r.summary}</div>
-                  <div className="small muted">
-                    {isAdmin ? `${r.user_name} · ` : ""}{when(r.created_at)}
-                    {r.decided_at ? ` · ${WORD[r.status]} by ${r.decided_by} ${when(r.decided_at)}` : ""}
+          {list.map((r) => {
+            const inv = invoiceOf(r);
+            const canAmend = isAdmin && r.status === "pending" && inv;
+            return (
+              <div key={r.id} className="approval">
+                <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div className="list-title">{r.summary}</div>
+                    <div className="small muted">
+                      {isAdmin ? `${r.user_name} · ` : ""}{when(r.created_at)}
+                      {r.decided_at ? ` · ${WORD[r.status]} by ${r.decided_by} ${when(r.decided_at)}` : ""}
+                    </div>
+                    {r.status === "rejected" && r.note && <div className="small">Reason: {r.note}</div>}
+                    {r.status === "approved" && r.note?.startsWith("Amended") && <div className="small muted">Amended before approving</div>}
                   </div>
-                  {r.status === "rejected" && r.note && <div className="small">Reason: {r.note}</div>}
+                  <div className="row approval-actions" style={{ gap: 8 }}>
+                    <Badge tone={TONE[r.status]}>{WORD[r.status]}</Badge>
+                    {isAdmin && r.status === "pending" && (
+                      <>
+                        <Button size="sm" icon={X} disabled={busy} onClick={() => reject(r)}>Reject</Button>
+                        {canAmend && (
+                          <Button size="sm" icon={Pencil} disabled={busy}
+                            onClick={() => navigate(`/admin/invoices?approval=${r.id}`)}>Amend</Button>
+                        )}
+                        <Button size="sm" variant="primary" icon={Check} busy={busy} onClick={() => approve(r)}>Approve</Button>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <div className="row" style={{ gap: 8, flexWrap: "nowrap" }}>
-                  <Badge tone={TONE[r.status]}>{WORD[r.status]}</Badge>
-                  {isAdmin && r.status === "pending" && (
-                    <>
-                      <Button size="sm" icon={X} disabled={busy} onClick={() => reject(r)}>Reject</Button>
-                      <Button size="sm" variant="primary" icon={Check} busy={busy} onClick={() => approve(r)}>Approve</Button>
-                    </>
+                <div className="row" style={{ gap: 14 }}>
+                  {isAdmin && inv && r.status === "pending" && (
+                    <button type="button" className="link-btn small" onClick={() => setPreview(preview === r.id ? null : r.id)}>
+                      <Eye size={13} /> {preview === r.id ? "Hide invoice" : "View invoice"}
+                    </button>
+                  )}
+                  {r.details && (
+                    <button type="button" className="link-btn small" onClick={() => setOpen(open === r.id ? null : r.id)}>
+                      {open === r.id ? "Hide details" : "Show details"}
+                    </button>
                   )}
                 </div>
+                {preview === r.id && <InvoicePreview r={r} inv={inv} />}
+                {open === r.id && <Fields details={r.details} />}
               </div>
-              {r.details && (
-                <button type="button" className="link-btn small" onClick={() => setOpen(open === r.id ? null : r.id)}>
-                  {open === r.id ? "Hide details" : "Show details"}
-                </button>
-              )}
-              {open === r.id && <pre className="approval-details">{r.details}</pre>}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </Card>
     </div>

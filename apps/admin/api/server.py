@@ -410,20 +410,55 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
             data = {}
         return reply["status"], data if isinstance(data, dict) else {}
 
+    @app.get("/api/approvals/{request_id}/data")
+    def approval_data(request_id: int, request: Request):
+        """What the user sent, as data (admins only): to preview an invoice or amend it first."""
+        if me(request)["role"] != "admin":
+            bad("Only an admin can do that.", 403)
+        with lock:
+            req = users.get_request(conn, request_id)
+        if not req:
+            bad("Request not found.", 404)
+        data = None
+        if "application/json" in (req["content_type"] or "") and req.get("body"):
+            try:
+                data = json.loads(users.body_of(req))
+            except ValueError:
+                data = None
+        return jsonable_encoder({"id": req["id"], "method": req["method"], "path": req["path"],
+                                 "status": req["status"], "summary": req["summary"], "data": data})
+
     @app.post("/api/approvals/{request_id}/approve")
     async def approve(request_id: int, request: Request):
+        """Approve a held change as it is, or with the admin's amended version ({"data": {...}},
+        for changes sent as JSON, e.g. an invoice edited on the invoice form before approving)."""
         admin = me(request)
+        raw = await request.body()
+        amended = None
+        if raw:
+            try:
+                amended = (json.loads(raw) or {}).get("data")
+            except (ValueError, AttributeError):
+                bad("That amended version couldn't be read.")
         with lock:
             req = users.get_request(conn, request_id)
         if not req or req["status"] != "pending":
             bad("That request isn't waiting any more.", 409)
+        if amended is not None:
+            if "application/json" not in (req["content_type"] or ""):
+                bad("Only changes made in a form can be amended.")
+            import base64 as _b64
+            req = {**req, "body": _b64.b64encode(json.dumps(amended).encode()).decode()}
         status, data = await apply_change(req, admin)
         if status >= 400:
             # Leave it waiting, so it can be looked at or rejected; say why it didn't go through.
             bad(f"Couldn't apply it: {data.get('detail') or f'error {status}'}", 409)
         with lock:
-            users.close_request(conn, request_id, "approved", admin, data.get("message") or "")
-        return {"message": f"Approved: {req['summary']}."}
+            users.close_request(conn, request_id, "approved", admin,
+                                ("Amended by the admin before approving. " if amended is not None else "")
+                                + (data.get("message") or ""))
+        return {"message": f"{'Amended and approved' if amended is not None else 'Approved'}: {req['summary']}.",
+                "result": data}
 
     @app.post("/api/approvals/{request_id}/reject")
     def reject(request_id: int, body: dict, request: Request):
