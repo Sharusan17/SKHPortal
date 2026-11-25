@@ -9,6 +9,7 @@ import {
   StatCard, useAction, useLoad,
 } from "../components/ui.jsx";
 import { useApp } from "../context.js";
+import { navigate } from "../router.js";
 import { money, plural, todayIso, ukDate } from "../format.js";
 import "./invoices/invoices-form.css";
 import CreditNotePanel from "./invoices/CreditNotePanel.jsx";
@@ -176,6 +177,11 @@ export default function InvoicesPage() {
   const [payErr, setPayErr] = useState("");
   // "Create invoice" on a car page opens /admin/invoices?car=<id>: start the form with that car.
   const [wantCar, setWantCar] = useState(() => (window.location.search.match(/[?&]car=(\d+)/) || [])[1] || null);
+  // "Amend" on an approval opens /admin/invoices?approval=<id>: the user's version, to edit then approve.
+  const [approval, setApproval] = useState(() => {
+    const id = (window.location.search.match(/[?&]approval=(\d+)/) || [])[1];
+    return id ? { id: Number(id), loading: true } : null;
+  });
   const formRef = useRef(null);
   const shownRef = useRef(null);
   const urlRef = useRef(null);
@@ -269,6 +275,28 @@ export default function InvoicesPage() {
     if (shown && shownRef.current) shownRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shown?.v]);
+
+  // Amend mode: once the page's data is in, load the user's version of the invoice into the form.
+  const loadPayloadRef = useRef(null);
+  const ready = !!(cars.data && defaults.data && list.data);
+  useEffect(() => {
+    if (!approval?.loading || !ready) return;
+    let live = true;
+    api.get(`/admin/api/approvals/${approval.id}/data`)
+      .then((d) => {
+        if (!live) return;
+        if (d.status !== "pending" || !d.data) {
+          setApproval({ id: approval.id, error: d.status !== "pending" ? "That request has already been dealt with." : "Nothing to amend in that request." });
+          return;
+        }
+        const m = d.path.match(/^\/api\/invoices\/(\d+)$/);
+        loadPayloadRef.current?.(d.data, m ? Number(m[1]) : null);
+        setApproval({ id: approval.id, summary: d.summary });
+      })
+      .catch((e) => live && setApproval({ id: approval.id, error: e.message }));
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [approval?.loading, ready]);
 
   const err = cars.error || defaults.error || list.error;
   if (err) return <Alert tone="error">{err.message}</Alert>;
@@ -377,6 +405,37 @@ export default function InvoicesPage() {
   };
   const cancelEdit = () => resetForm(defaults.data.salesperson || "");
 
+  // A held request's invoice (the body a save sends) back into the form.
+  const loadPayload = (d, invoiceId) => {
+    const v = d.vehicle || {};
+    const vehicle = blankVehicle();
+    for (const k of VEHICLE_KEYS) vehicle[k] = v[k] === null || v[k] === undefined ? "" : String(v[k]);
+    vehicle.first_reg = dateOnly(v.first_reg);
+    const pricing = Object.fromEntries(PRICING_KEYS.map((k) => [k, d.pricing && Number(d.pricing[k]) ? String(d.pricing[k]) : ""]));
+    const items = (d.items || []).map((it) => newItem({ desc: it.desc || "", qty: String(it.qty ?? 1), cost: String(it.cost ?? "") }));
+    const party = (p) => ({ name: p?.name || "", address: padAddress(p?.address), email: p?.email || "", phone: p?.phone || "" });
+    setF({
+      carId: d.vehicle_id ? String(d.vehicle_id) : "",
+      invoiceDate: dateOnly(d.invoice_date),
+      salesperson: d.salesperson || "",
+      buyer: party(d.buyer),
+      sameAsBuyer: d.deliver_same !== false,
+      deliver: party(d.deliver_to),
+      vehicle,
+      items: items.length ? items : [newItem()],
+      warranty: [...(d.warranty_lines || [])],
+      special: [...(d.special_instructions || [])],
+      pricing,
+      margin: !!d.margin_scheme,
+    });
+    setEditingId(invoiceId || null);
+    setView("edit");
+    setTried(false);
+    setServerErr("");
+  };
+
+  loadPayloadRef.current = loadPayload;
+
   const loadInvoice = (inv) => {
     const v = inv.vehicle || {};
     const vehicle = blankVehicle();
@@ -432,6 +491,23 @@ export default function InvoicesPage() {
     if (sellerProblems.length || required.length) return;
     setServerErr("");
     const payload = invoicePayload(f, standard);
+    if (approval) {
+      // Amending a user's request: approve it with this version.
+      const done = await run(async () => {
+        try {
+          return await api.post(`/admin/api/approvals/${approval.id}/approve`, { data: payload });
+        } catch (e) {
+          setServerErr(e.message);
+          throw e;
+        }
+      });
+      if (done) {
+        refresh();
+        window.dispatchEvent(new Event("approvals-changed"));
+        navigate("/admin/approvals");
+      }
+      return;
+    }
     const res = await run(async () => {
       try {
         return editingId
@@ -585,6 +661,14 @@ export default function InvoicesPage() {
       )}
 
       <div ref={formRef} className="stack">
+        {approval && (
+          <Alert tone={approval.error ? "error" : "info"}>
+            {approval.error ? approval.error
+              : approval.loading ? "Loading the user's version…"
+                : <>Amending a user's request{approval.summary ? `: ${approval.summary}` : ""}. Change what you need,
+                  then press <strong>Approve with changes</strong>. Nothing is saved until then.</>}
+          </Alert>
+        )}
         {view === "edit" ? (
           <>
             {/* Parties and sales details */}
@@ -818,9 +902,11 @@ export default function InvoicesPage() {
 
         <div className="action-bar">
           <Button variant="primary" icon={Check} busy={busy} disabled={sellerProblems.length > 0} onClick={onSave}>
-            {editing ? "Save and re-generate PDF" : "Create Invoice"}
+            {approval ? "Approve with changes" : editing ? "Save and re-generate PDF" : "Create Invoice"}
           </Button>
-          {editing && <Button icon={X} onClick={cancelEdit}>Cancel</Button>}
+          {approval
+            ? <Button icon={X} onClick={() => navigate("/admin/approvals")}>Back to approvals</Button>
+            : editing && <Button icon={X} onClick={cancelEdit}>Cancel</Button>}
           <span className="summary">
             Balance {t.balance === undefined ? "-" : money(t.balance)} · {car ? car.reg : "No car chosen"}
           </span>
