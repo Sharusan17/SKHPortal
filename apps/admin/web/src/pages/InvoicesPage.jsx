@@ -824,7 +824,7 @@ export default function InvoicesPage() {
                   <div className="stack-sm">
                     <div className="sub-head">Special instructions</div>
                     {standard && (
-                      <div className="ro-box">{t.vat_line || "Incl. VAT at 20%"}</div>
+                      <div className="ro-box">{t.vat_line || "VAT"}</div>
                     )}
                     <LineList idBase="f-special_instructions" lines={f.special} max={specialMax}
                       onLine={(i, v) => setList("special", i, v)} errMsg={errOf("special_instructions")}
@@ -847,9 +847,14 @@ export default function InvoicesPage() {
                 </div>
                 <div className="stack-sm">
                   <div className="summary-panel">
-                    <div className="kv-row"><span>Selling Price</span><span>{money(t.selling_price ?? 0)}</span></div>
-                    <div className="kv-row"><span>Sub Total</span><span>{money(t.sub_total ?? 0)}</span></div>
-                    <div className="kv-row"><span>Total Price</span><span>{money(t.total_price ?? 0)}</span></div>
+                    <div className="kv-row"><span>Selling Price{standard && t.vat ? " (before VAT)" : ""}</span>
+                      <span>{money((standard && t.vat ? t.vat.selling_price : t.selling_price) ?? 0)}</span></div>
+                    <div className="kv-row"><span>Sub Total</span>
+                      <span>{money((standard && t.vat ? t.vat.sub_total : t.sub_total) ?? 0)}</span></div>
+                    {standard && t.vat && (
+                      <div className="kv-row"><span>VAT</span><span>{money(t.vat.vat)}</span></div>
+                    )}
+                    <div className="kv-row"><span>Total Price{standard && t.vat ? " (incl. VAT)" : ""}</span><span>{money(t.total_price ?? 0)}</span></div>
                     {numOr0(f.pricing.px_allowance) !== 0 && (
                       <div className="kv-row"><span>Less PX Allowance</span><span>{money(numOr0(f.pricing.px_allowance))}</span></div>
                     )}

@@ -1204,6 +1204,7 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
         pricing = {k: float(core.dec((body.get("pricing") or {}).get(k)) or 0) for k in core.INVOICE_PRICING}
         out = core.invoice_totals(items, pricing)
         out["vat_line"] = core.standard_vat_line(pricing) if body.get("standard") else None
+        out["vat"] = core.vat_split(items, pricing) if body.get("standard") else None
         return out
 
     def editing(conn, body: dict) -> dict | None:
