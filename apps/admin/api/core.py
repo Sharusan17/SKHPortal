@@ -1626,10 +1626,29 @@ def _uk(v) -> str:
     return d.strftime("%d/%m/%Y") if d else ""
 
 
+VATABLE_PRICING = ("selling_price", "delivery", "accessories")  # charges that carry VAT on a Standard car
+
+
+def _ex_vat(v) -> Decimal:
+    return pence(Decimal(str(v or 0)) * 5 / 6)
+
+
+def vat_split(items: list[dict], pricing: dict) -> dict:
+    """A Standard-rated invoice priced before VAT. The prices entered include VAT; the car, delivery and
+    accessories are shown without it, the VAT on its own line, and the Total Price is unchanged.
+    VAT is whatever is left after the prices before VAT, so the lines always add up to the total."""
+    nets = {k: _ex_vat(pricing.get(k)) for k in VATABLE_PRICING}
+    gross = sum((Decimal(str(pricing.get(k) or 0)) for k in VATABLE_PRICING), ZERO)
+    sub = sum(nets.values(), ZERO)
+    costs = [_ex_vat(it["cost"]) for it in items]
+    return {**{k: float(v) for k, v in nets.items()}, "sub_total": float(sub), "vat": float(gross - sub),
+            "item_costs": [float(c) for c in costs],
+            "items_total": float(sum((c * int(it.get("qty", 1)) for c, it in zip(costs, items)), ZERO))}
+
+
 def standard_vat_line(pricing: dict) -> str:
-    """VAT shown on a Standard-rated car invoice: 1/6 of the car, delivery and accessories."""
-    vatable = sum(Decimal(str(pricing.get(k) or 0)) for k in ("selling_price", "delivery", "accessories"))
-    return f"Incl. VAT at 20%: {_fmt(pence(vatable / 6))}"
+    """The VAT line in the special instructions of a Standard-rated car invoice."""
+    return f"VAT: {_fmt(Decimal(str(vat_split([], pricing)['vat'])))}"
 
 
 _ADDRESS_LINES = 4  # the name plus four address lines print in each address block
@@ -1883,6 +1902,7 @@ def invoice_document(conn, inv: dict) -> dict:
         "warranty_lines": inv["warranty_lines"], "special_instructions": special,
         "pricing": inv["pricing"], "margin_scheme": inv["margin_scheme"],
         "margin_scheme_text": MARGIN_SCHEME_TEXT,
+        "vat": vat_split(inv["items"], inv["pricing"]) if car.get("scheme") == STANDARD else None,
     }
 
 

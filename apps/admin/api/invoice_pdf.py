@@ -122,11 +122,12 @@ def build_invoice(d: dict, out_path, logo=None):
         c.line(x, 311.9, x, 289.5)
 
     items = d["items"]
+    vs = d.get("vat")  # a Standard-rated car: costs and prices shown before VAT, VAT on its own line
     for i, it in enumerate(items[:9]):
         y = 464.4 - i * 12.3
         t(59.3, y, it["desc"])
         t(164.4, y, it.get("qty", 1))
-        tr(247.2, y, money(it["cost"]))
+        tr(247.2, y, money(vs["item_costs"][i] if vs else it["cost"]))
     for i, line in enumerate(d.get("warranty_lines", [])[:5]):
         t(268.5, 464.4 - i * 12.3, line)
 
@@ -136,7 +137,7 @@ def build_invoice(d: dict, out_path, logo=None):
 
     items_total = sum(it["cost"] * it.get("qty", 1) for it in items)
     t(59.5, 296.9, "Totals", "B")
-    tr(241.9, 298.3, money(items_total))
+    tr(241.9, 298.3, money(vs["items_total"] if vs else items_total))
     t(265.9, 297.8, "* Total", "B")
 
     # ---- right panel: price build-up ----
@@ -175,6 +176,12 @@ def build_invoice(d: dict, out_path, logo=None):
         ("Less Deposit / Payments", 186.2, False, g("deposit"), 186.2, False),
         ("Balance", 136.8, True, balance, 136.8, True),
     ]
+    if vs:  # before-VAT prices, then the VAT in the free row under Sub Total; Total Price includes it
+        before = {"Selling Price": vs["selling_price"], "Delivery Charge": vs["delivery"],
+                  "Accessories": vs["accessories"], "Sub Total": vs["sub_total"]}
+        rows = [(lb, ly, b, before[lb] if ly > 400 and lb in before else v, vy, s)
+                for lb, ly, b, v, vy, s in rows]
+        rows.insert(4, ("VAT", 400.4, False, vs["vat"], 400.4, True))
     for label, ly, bold, val, vy, _show in rows:
         t(431.0, ly, label, "B" if bold else "R", S_PANEL)
         # every row shows a figure, so an unused charge reads £0.00 rather than a blank
