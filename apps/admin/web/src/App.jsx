@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Building2, CalendarClock, CalendarCheck, CalendarX, CheckCircle2, Circle, Car, ArrowLeftRight,
-  BarChart3, ClipboardCheck, Flag, LayoutDashboard, Loader2, Wallet, ReceiptPoundSterling, ReceiptText, Search,
+  BarChart3, ClipboardCheck, Flag, LayoutDashboard, Loader2, Menu, X, Wallet, ReceiptPoundSterling, ReceiptText, Search,
   ShieldCheck, Users,
 } from "lucide-react";
 import { api } from "./api.js";
@@ -114,13 +114,25 @@ function SidebarLogo({ name, hasLogo }) {
 
 const KIND_SHORT = { quarter: "Quarter", year: "Year", tax_year: "Tax year", financial_year: "Fin. year", all: "All time" };
 
-function Sidebar({ page, business, quarter, period, periods, setPeriodId, version, me }) {
+function Sidebar({ page, business, quarter, period, periods, setPeriodId, version, me, open = false, onClose }) {
   const isAdmin = me.role === "admin";
   const name = business.trading_name || business.company_name;
   const kinds = Object.keys(KIND_SHORT).filter((k) => (periods.options[k] || []).length);
   const options = periods.options[period.kind] || [];
+  // On a phone the sidebar is a drawer: the menu button in the top bar slides it in.
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") onClose?.(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
   return (
-    <aside className="sidebar">
+    <>
+    {open && <div className="drawer-backdrop" onClick={onClose} aria-hidden="true" />}
+    <aside className={`sidebar ${open ? "open" : ""}`} id="main-menu">
+      <button type="button" className="icon-square drawer-close" aria-label="Close menu" onClick={onClose}>
+        <X size={18} />
+      </button>
       <SidebarLogo name={name} hasLogo={business.has_logo} />
 
       <div className="biz-card">
@@ -170,6 +182,7 @@ function Sidebar({ page, business, quarter, period, periods, setPeriodId, versio
       </div>
 
     </aside>
+    </>
   );
 }
 
@@ -198,6 +211,8 @@ function Dashboard() {
   const page = usePathPage();
   const [version, setVersion] = useState(0);
   const [search, setSearch] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => { setMenuOpen(false); }, [page]); // a new page closes the phone menu
   const refresh = useCallback(() => setVersion((v) => v + 1), []);
   const meta = useLoad(() => api.get("/admin/api/meta"), []);
   // Who's signed in, their role and how many requests wait; reloaded when something changes.
@@ -308,9 +323,14 @@ function Dashboard() {
     <AppCtx.Provider value={ctx}>
       <div className="shell">
         <Sidebar page={carId ? "stock" : expenseId || flagId ? "expenses" : shown} business={business} quarter={quarter} period={period}
-          periods={periods} setPeriodId={setPeriodId} version={version} me={me} />
+          periods={periods} setPeriodId={setPeriodId} version={version} me={me}
+          open={menuOpen} onClose={() => setMenuOpen(false)} />
         <div className="content">
           <div className="topbar">
+            <button type="button" className="icon-square menu-btn" aria-label="Open menu" aria-controls="main-menu"
+              aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>
+              <Menu size={18} />
+            </button>
             <label className="search">
               <Search size={16} aria-hidden="true" />
               <input type="search" placeholder="Search" value={search}
