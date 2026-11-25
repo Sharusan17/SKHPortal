@@ -449,11 +449,16 @@ def create_app(db_path: str | None = None, auth: "admin_auth.Auth | None" = None
                 bad("Only changes made in a form can be amended.")
             import base64 as _b64
             req = {**req, "body": _b64.b64encode(json.dumps(amended).encode()).decode()}
+            with lock:  # before/after of the amended version, while the record is still as it was
+                amended_change = users.describe_change(conn, req["method"], req["path"], req["content_type"],
+                                                       json.dumps(amended).encode())
         status, data = await apply_change(req, admin)
         if status >= 400:
             # Leave it waiting, so it can be looked at or rejected; say why it didn't go through.
             bad(f"Couldn't apply it: {data.get('detail') or f'error {status}'}", 409)
         with lock:
+            if amended is not None:
+                users.set_changes(conn, request_id, amended_change)
             users.close_request(conn, request_id, "approved", admin,
                                 ("Amended by the admin before approving. " if amended is not None else "")
                                 + (data.get("message") or ""))

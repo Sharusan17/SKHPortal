@@ -66,26 +66,78 @@ function Fields({ details }) {
   );
 }
 
-// The invoice as it would be printed, drawn from what the user sent.
+// The change as before/after fields, saved with the request when the user made it.
+const changesOf = (r) => {
+  try {
+    const c = JSON.parse(r.changes || "");
+    return c && Array.isArray(c.fields) ? c : null;
+  } catch { return null; }
+};
+
+// Changed fields lead, highlighted, with what they were underneath; the rest are tucked away.
+function Changes({ change }) {
+  const [all, setAll] = useState(false);
+  const isNew = change.kind === "new";
+  const changed = change.fields.filter((f) => isNew || f.changed);
+  const same = isNew ? [] : change.fields.filter((f) => !f.changed && (f.before || f.after));
+  if (!changed.length && !same.length) return null;
+  return (
+    <div className="diff">
+      {!isNew && !changed.length && <p className="small muted">Nothing would change.</p>}
+      {changed.map((f) => (
+        <div key={f.key} className={`diff-row ${isNew ? "is-new" : "is-changed"}`}>
+          <div className="diff-label">{f.label}</div>
+          <div className="diff-value">
+            <span className="diff-after">{f.after || <em className="muted">Removed</em>}</span>
+            {!isNew && <span className="diff-before">Was: <s>{f.before || "blank"}</s></span>}
+          </div>
+        </div>
+      ))}
+      {same.length > 0 && (
+        <>
+          <button type="button" className="link-btn small diff-toggle" onClick={() => setAll(!all)}>
+            {all ? "Hide unchanged fields" : `Show ${same.length} unchanged field${same.length === 1 ? "" : "s"}`}
+          </button>
+          {all && same.map((f) => (
+            <div key={f.key} className="diff-row">
+              <div className="diff-label">{f.label}</div>
+              <div className="diff-value">{f.after || f.before}</div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+async function pdfUrl(url, init) {
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    let msg = `Couldn't draw the invoice (${res.status})`;
+    try { const j = await res.json(); if (typeof j.detail === "string") msg = j.detail; } catch { /* keep */ }
+    throw new Error(msg);
+  }
+  return URL.createObjectURL(await res.blob());
+}
+
+// The invoice as it would be printed, drawn from what the user sent; next to the original for an edit.
 function InvoicePreview({ r, inv }) {
-  const [state, setState] = useState({ url: null, err: "", loading: false });
+  const [state, setState] = useState({ url: null, before: null, err: "", loading: false });
   const load = async () => {
-    setState({ url: null, err: "", loading: true });
+    setState({ url: null, before: null, err: "", loading: true });
     try {
       const d = await api.get(`/admin/api/approvals/${r.id}/data`);
       if (!d.data) throw new Error("This request has no invoice to show.");
       const body = { ...d.data, ...(inv.id ? { invoice_id: inv.id } : {}) };
-      const res = await fetch("/admin/api/invoices/draft.pdf", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        let msg = `Couldn't draw the invoice (${res.status})`;
-        try { const j = await res.json(); if (typeof j.detail === "string") msg = j.detail; } catch { /* keep */ }
-        throw new Error(msg);
-      }
-      setState({ url: URL.createObjectURL(await res.blob()), err: "", loading: false });
+      const [url, before] = await Promise.all([
+        pdfUrl("/admin/api/invoices/draft.pdf", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        }),
+        inv.id ? pdfUrl(`/admin/api/invoices/${inv.id}/pdf`).catch(() => null) : null,
+      ]);
+      setState({ url, before, err: "", loading: false });
     } catch (e) {
-      setState({ url: null, err: e.message, loading: false });
+      setState({ url: null, before: null, err: e.message, loading: false });
     }
   };
   useEffect(() => {
@@ -93,9 +145,23 @@ function InvoicePreview({ r, inv }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [r.id]);
   useEffect(() => () => { if (state.url) URL.revokeObjectURL(state.url); }, [state.url]);
+  useEffect(() => () => { if (state.before) URL.revokeObjectURL(state.before); }, [state.before]);
   if (state.loading || (!state.url && !state.err)) return <p className="small muted">Drawing the invoice…</p>;
   if (state.err) return <Alert tone="warning">{state.err}</Alert>;
-  return <iframe className="approval-pdf" src={state.url} title={`Invoice in request ${r.id}`} />;
+  if (!inv.id) return <iframe className="approval-pdf" src={state.url} title={`Invoice in request ${r.id}`} />;
+  return (
+    <div className="pdf-compare">
+      <div className="pdf-side is-before">
+        <div className="pdf-tag">Original</div>
+        {state.before ? <iframe className="approval-pdf" src={state.before} title="The invoice as it is now" />
+          : <p className="small muted">The original PDF isn't available.</p>}
+      </div>
+      <div className="pdf-side is-after">
+        <div className="pdf-tag">New</div>
+        <iframe className="approval-pdf" src={state.url} title="The invoice with the changes" />
+      </div>
+    </div>
+  );
 }
 
 // Admins: every user's held changes, to approve, amend or reject. Users: their own requests.
@@ -132,6 +198,7 @@ export default function ApprovalsPage() {
         <div className="stack-sm">
           {list.map((r) => {
             const inv = invoiceOf(r);
+            const change = changesOf(r);
             const canAmend = isAdmin && r.status === "pending" && inv;
             return (
               <div key={r.id} className="approval">
@@ -162,17 +229,18 @@ export default function ApprovalsPage() {
                 <div className="row" style={{ gap: 14 }}>
                   {isAdmin && inv && r.status === "pending" && (
                     <button type="button" className="link-btn small" onClick={() => setPreview(preview === r.id ? null : r.id)}>
-                      <Eye size={13} /> {preview === r.id ? "Hide invoice" : "View invoice"}
+                      <Eye size={13} /> {preview === r.id ? "Hide invoice" : inv.id ? "Compare invoices" : "View invoice"}
                     </button>
                   )}
-                  {r.details && (
+                  {r.details && (!change || change.kind === "new") && (
                     <button type="button" className="link-btn small" onClick={() => setOpen(open === r.id ? null : r.id)}>
                       {open === r.id ? "Hide details" : "Show details"}
                     </button>
                   )}
                 </div>
+                {change && change.kind === "edit" && <Changes change={change} />}
                 {preview === r.id && <InvoicePreview r={r} inv={inv} />}
-                {open === r.id && <Fields details={r.details} />}
+                {open === r.id && (change ? <Changes change={change} /> : <Fields details={r.details} />)}
               </div>
             );
           })}

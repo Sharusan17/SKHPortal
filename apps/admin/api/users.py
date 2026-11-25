@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS change_requests (
     details TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending',
     decided_by TEXT, decided_at TEXT, note TEXT
 );
+ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS changes TEXT NOT NULL DEFAULT ''
 """
 
 
@@ -338,20 +339,44 @@ def summarise(conn, method: str, path: str, content_type: str, body: bytes) -> t
     return summary, details
 
 
+def describe_change(conn, method: str, path: str, content_type: str, body: bytes) -> str:
+    """The change as before/after fields (JSON text), or '' when it can't be described."""
+    if "application/json" not in (content_type or "") or not body:
+        return ""
+    try:
+        import changes  # needs core; loaded only when a change is described
+        d = changes.describe(conn, method, path, json.loads(body))
+        return json.dumps(d, ensure_ascii=False, default=str) if d else ""
+    except Exception:  # only a view of the change; never fail a request over it
+        return ""
+
+
 def queue(conn, person: dict, method: str, path: str, query: str, content_type: str, body: bytes) -> dict:
     summary, details = summarise(conn, method, path, content_type, body)
+    change = describe_change(conn, method, path, content_type, body)
     with conn:
         r = conn.execute(
             "INSERT INTO change_requests (user_email, user_name, created_at, method, path, query, content_type, "
-            "body, summary, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
+            "body, summary, details, changes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
             (person["email"], person["name"], _now(), method, path, query, content_type,
-             base64.b64encode(body or b"").decode(), summary, details)).fetchone()
+             base64.b64encode(body or b"").decode(), summary, details, change)).fetchone()
     return _request_public(r)
 
 
-def _request_public(r) -> dict:
+def set_changes(conn, request_id: int, change: str) -> None:
+    """Keep the before/after of the version actually approved (an admin's amended one)."""
+    if change:
+        with conn:
+            conn.execute("UPDATE change_requests SET changes = ? WHERE id = ?", (change, request_id))
+
+
+def _request_public(r, conn=None) -> dict:
     r = dict(r)
-    r.pop("body", None)
+    body = r.pop("body", None)
+    if conn is not None and not r.get("changes") and r.get("status") == "pending" and body:
+        # A request from before changes were saved with it: compare with the record as it is now.
+        r["changes"] = describe_change(conn, r["method"], r["path"], r.get("content_type") or "",
+                                       base64.b64decode(body))
     return r
 
 
@@ -366,7 +391,7 @@ def list_requests(conn, person: dict, status: str | None = None) -> list[dict]:
         params.append(status)
     if where:
         sql += " WHERE " + " AND ".join(where)
-    return [_request_public(r) for r in conn.execute(sql + " ORDER BY id DESC LIMIT 300", params)]
+    return [_request_public(r, conn) for r in conn.execute(sql + " ORDER BY id DESC LIMIT 300", params).fetchall()]
 
 
 def pending_count(conn, person: dict) -> int:
